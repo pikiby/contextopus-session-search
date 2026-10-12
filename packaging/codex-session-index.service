@@ -1,0 +1,22 @@
+[Unit]
+Description=Local Codex session semantic index
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/session-search index --codex-home %h/.codex --database %h/.local/share/codex-session-index/index.sqlite3 --socket %t/codex-session-index.sock --threads 2
+Environment=HF_HUB_OFFLINE=1
+Environment=TRANSFORMERS_OFFLINE=1
+Environment=TOKENIZERS_PARALLELISM=false
+Environment=PYTHONUNBUFFERED=1
+Environment=PYTHONDONTWRITEBYTECODE=1
+UMask=0077
+Restart=on-failure
+RestartSec=10
+CPUQuota=200%
+MemoryHigh=4G
+MemoryMax=5G
+MemorySwapMax=0
+Nice=10
+
+[Install]
+WantedBy=default.target
