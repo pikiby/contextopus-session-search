@@ -169,6 +169,97 @@ class IndexerTests(unittest.TestCase):
         self.assertEqual(len(matches), 1)
         self.assertEqual(matches[0]['session']['id'], 'replacement')
 
+    def test_search_arriving_during_read_sees_pending_new_jobs(self):
+        import queue
+        response = queue.Queue()
+        original = self.actor.process_file
+        def read_then_request(path):
+            original(path)
+            self.actor.requests.put((dict(op='search', query='question'), response))
+        with patch.object(self.actor, 'process_file', side_effect=read_then_request):
+            self.actor.step()
+        self.assertTrue(self.actor.cached_status()['index_pending'])
+        self.assertEqual(self.actor.cached_status()['stats']['jobs']['pending'], 1)
+        self.actor.step()
+        result = response.get_nowait()
+        self.assertTrue(result['ok'])
+        self.assertEqual(result['matches'], [])
+        self.assertTrue(result['index_pending'])
+        self.drain()
+        self.assertEqual(self.actor.cached_status()['stats']['vectors'], 1)
+        self.assertFalse(self.actor.cached_status()['index_pending'])
+
+    def test_status_counts_are_rate_limited_but_activity_is_immediate(self):
+        with patch.object(self.store, 'stats', wraps=self.store.stats) as stats:
+            with patch('session_search.indexer.time.monotonic', return_value=self.actor._stats_refreshed_at + 1):
+                for _ in range(20):
+                    self.actor.status()
+                with self.actor._working('embedding', 'sid', self.path):
+                    self.assertEqual(self.actor.cached_status()['activity']['session_id'], 'sid')
+                self.assertIsNone(self.actor.cached_status()['activity'])
+                self.assertEqual(stats.call_count, 0)
+            with patch('session_search.indexer.time.monotonic', return_value=self.actor._stats_refreshed_at + 2):
+                self.actor.status()
+                self.actor.status()
+                self.assertEqual(stats.call_count, 1)
+            self.actor.status(force=True)
+            self.assertEqual(stats.call_count, 2)
+        self.drain()
+        self.assertEqual(self.actor.cached_status()['stats']['vectors'], 1)
+        self.assertFalse(self.actor.cached_status()['index_pending'])
+
+    def test_status_remains_live_during_inference(self):
+        import threading
+        entered, release = threading.Event(), threading.Event()
+        results, failures = [], []
+        original = self.actor.embedder.encode
+        def blocked(texts):
+            entered.set()
+            if not release.wait(3):
+                raise AssertionError('Status client did not release inference')
+            return original(texts)
+        self.actor.embedder.encode = blocked
+        sock = self.home / 'live-status.sock'
+        server = serve(self.actor, sock)
+        def client():
+            try:
+                self.assertTrue(entered.wait(3))
+                # Reading SQLite from this handler thread would fail thread affinity.
+                result = request_index(dict(op='status'), sock, timeout=1)
+                results.append(result)
+                result['stats']['sessions'] = -1
+                results.append(request_index(dict(op='status'), sock, timeout=1))
+            except Exception as exc:
+                failures.append(exc)
+            finally:
+                release.set()
+        thread = threading.Thread(target=client)
+        thread.start()
+        try:
+            self.actor.step()
+            thread.join(4)
+            self.assertFalse(thread.is_alive())
+            self.assertEqual(failures, [])
+            self.assertNotEqual(results[1]['stats']['sessions'], -1)
+            self.assertEqual(results[1]['activity']['operation'], 'embedding')
+            self.assertEqual(results[1]['activity']['session_id'], 'sid')
+            self.assertEqual(results[1]['activity']['path'], str(self.path))
+            self.assertTrue(results[1]['activity']['started_at'])
+            self.assertTrue(results[1]['index_pending'])
+            self.assertEqual(results[1]['pid'], __import__('os').getpid())
+            self.assertTrue(results[1]['started_at'])
+            self.assertTrue(self.actor.cached_status()['last_completed_at'])
+            self.assertIsNone(self.actor.cached_status()['activity'])
+            self.assertTrue(self.actor.requests.empty())
+            with self.assertRaises(RuntimeError):
+                request_index(dict(op='status', codex_home=str(self.home / 'other')), sock, timeout=1)
+        finally:
+            release.set()
+            thread.join(4)
+            server.shutdown()
+            server.server_close()
+            server.socket_lock.close()
+
     def test_socket_rpc_and_ownership(self):
         import os
         import threading

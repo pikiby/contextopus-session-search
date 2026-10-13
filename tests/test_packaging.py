@@ -22,7 +22,7 @@ class PackagingTests(unittest.TestCase):
             package = extracted / 'usr/lib/session-search/session_search'
             self.assertEqual({p.name for p in package.iterdir()},
                              {name + '.py' for name in
-                              ('__init__', 'reader', 'store', 'embedding', 'indexer', 'server')})
+                              ('__init__', 'reader', 'store', 'embedding', 'indexer', 'server', 'tui', 'tui_backend')})
             self.assertTrue((extracted / 'usr/bin/session-search').stat().st_mode & 0o111)
             unit = (extracted / 'usr/lib/systemd/user/codex-session-index.service').read_text()
             for setting in ('CPUQuota=200%', 'MemoryHigh=4G', 'MemoryMax=5G',
@@ -37,7 +37,7 @@ class PackagingTests(unittest.TestCase):
             fake.chmod(0o755)
             import os
             env = dict(os.environ, SESSION_SEARCH_PYTHON=str(fake))
-            for command, module in [('mcp', 'server'), ('index', 'indexer')]:
+            for command, module in [('mcp', 'server'), ('index', 'indexer'), ('tui', 'tui')]:
                 result = subprocess.run([str(ROOT / 'scripts/session-search'), command],
                                         env=env, check=True, capture_output=True, text=True)
                 self.assertEqual(result.stdout.splitlines(), ['-m', 'session_search.' + module])

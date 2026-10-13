@@ -1,6 +1,9 @@
-"""Single actor owns the model and SQLite; watcher/RPC threads only enqueue."""
+"""Single actor owns model/SQLite; RPC threads enqueue search or read cached status."""
 import argparse
 import collections
+import copy
+from contextlib import contextmanager
+from datetime import datetime, timezone
 import fcntl
 import hashlib
 import json
@@ -74,6 +77,43 @@ class Indexer:
         self.paths, self.titles, self.errors = {}, {}, {}
         self.stopping = threading.Event()
         self.next_sweep = 0
+        self.pid = os.getpid()
+        self.started_at = self._timestamp()
+        self.activity = None
+        self.last_completed_at = None
+        self._status_lock = threading.Lock()
+        self._status_snapshot = {}
+        self._stats_cache = None
+        self._stats_refreshed_at = 0
+        self._last_step_worked = False
+        self.status(force=True)
+
+    @staticmethod
+    def _timestamp():
+        return datetime.now(timezone.utc).isoformat()
+
+    @contextmanager
+    def _working(self, operation, session_id=None, path=None):
+        self.activity = dict(operation=operation, session_id=session_id,
+                             path=str(path) if path is not None else None,
+                             started_at=self._timestamp())
+        self.status(refresh=False)
+        try:
+            yield
+        finally:
+            self.activity = None
+            self.last_completed_at = self._timestamp()
+            self.status(refresh=False)
+
+    def cached_status(self, request=None):
+        # Handler threads must never touch SQLite or the model.
+        if request and request.get('codex_home') and Path(request['codex_home']).resolve() != self.home:
+            raise ValueError('codex_home differs from running indexer')
+        with self._status_lock:
+            result = copy.deepcopy(self._status_snapshot)
+        if not self.events.empty():
+            result['index_pending'] = True
+        return result
 
     def mark(self, path):
         self.events.put(str(path))
@@ -159,6 +199,9 @@ class Indexer:
                 sid = _session_id(path)
                 state = 'archived' if 'archived_sessions' in path.relative_to(self.home).parts else 'active'
                 self.paths[filename] = (sid, state)
+            if self.activity and self.activity['operation'] == 'read':
+                self.activity['session_id'] = sid
+                self.status(refresh=False)
             stat = path.stat()
             checkpoint = self.store.checkpoint(sid)
             offset, reader_state = 0, None
@@ -212,11 +255,23 @@ class Indexer:
         except Exception as exc:
             self._error(filename, exc)
 
-    def status(self):
-        stats = self.store.stats()
-        return dict(stats=stats, codex_home=str(self.home), errors=dict(self.errors),
-                    index_pending=bool(self.next_sweep == 0 or self.dirty or not self.events.empty() or
-                                       any(stats['jobs'].values())))
+    def status(self, *, refresh=True, force=False):
+        # Large COUNT/GROUP BY queries run at most once every two seconds;
+        # activity publications reuse cached counts and remain immediate.
+        now = time.monotonic()
+        if self._stats_cache is None or force or (refresh and now - self._stats_refreshed_at >= 2):
+            self._stats_cache = self.store.stats()
+            self._stats_refreshed_at = now
+        stats = copy.deepcopy(self._stats_cache)
+        result = dict(stats=stats, codex_home=str(self.home), errors=dict(self.errors),
+                      index_pending=bool(self.next_sweep == 0 or self.dirty or not self.events.empty() or
+                                         any(stats['jobs'].values()) or
+                                         (self.activity and self.activity['operation'] in ('reconcile', 'read', 'embedding'))),
+                      pid=self.pid, started_at=self.started_at,
+                      activity=copy.deepcopy(self.activity), last_completed_at=self.last_completed_at)
+        with self._status_lock:
+            self._status_snapshot = copy.deepcopy(result)
+        return result
 
     def handle_request(self, request):
         if request.get('codex_home') and Path(request['codex_home']).resolve() != self.home:
@@ -229,8 +284,9 @@ class Indexer:
         limit = request.get('limit', 10)
         if not isinstance(limit, int) or isinstance(limit, bool) or not 1 <= limit <= 200:
             raise ValueError('limit must be between 1 and 200')
-        vector = self.embedder.encode_query(request.get('query'))
-        matches = self.store.search(vector, limit=limit, state=request.get('state', 'all'))
+        with self._working('search'):
+            vector = self.embedder.encode_query(request.get('query'))
+            matches = self.store.search(vector, limit=limit, state=request.get('state', 'all'))
         return dict(matches=matches, **self.status())
 
     def step(self):
@@ -246,7 +302,8 @@ class Indexer:
                 response.put(dict(ok=False, error=type(exc).__name__ + ': ' + str(exc)))
             return True
         if time.monotonic() >= self.next_sweep:
-            self.reconcile()
+            with self._working('reconcile'):
+                self.reconcile()
         for _ in range(1000):
             try:
                 path = self.events.get_nowait()
@@ -258,21 +315,31 @@ class Indexer:
         worked = False
         if self.dirty:
             path, _ = self.dirty.popitem(last=False)
-            self.process_file(path)
+            with self._working('read', self.paths.get(path, (None, None))[0], path):
+                self.process_file(path)
             worked = True
         # One job per step bounds request delay to one inference call.
         if not self.requests.empty():
+            # Publish newly ingested jobs before serving an intervening search.
+            self.status(force=worked)
+            self._last_step_worked = worked or self._last_step_worked
             return True
         job = self.store.claim_job()
         if job:
             try:
-                self.store.complete_job(job['id'], job['content_hash'], self.embedder.encode([job['text']])[0])
+                row = self.store.db.execute('SELECT session_id FROM chunks WHERE id=?', (job['chunk_id'],)).fetchone()
+                sid = row['session_id'] if row else None
+                path = next((path for path, (session_id, _) in self.paths.items() if session_id == sid), None)
+                with self._working('embedding', sid, path):
+                    self.store.complete_job(job['id'], job['content_hash'], self.embedder.encode([job['text']])[0])
             except Exception as exc:
                 self.store.fail_job(job['id'], type(exc).__name__)
                 self._error('embedding', exc)
             else:
                 self.errors.pop('embedding', None)
             worked = True
+        self.status(force=self._last_step_worked and not worked)
+        self._last_step_worked = worked
         return worked
 
 
@@ -287,9 +354,12 @@ def serve(actor, path):
                 payload = json.loads(raw)
                 if not isinstance(payload, dict):
                     raise ValueError('Request must be an object')
-                response = queue.Queue(maxsize=1)
-                actor.requests.put((payload, response))
-                result = response.get(timeout=60)
+                if payload.get('op') == 'status':
+                    result = dict(ok=True, **actor.cached_status(payload))
+                else:
+                    response = queue.Queue(maxsize=1)
+                    actor.requests.put((payload, response))
+                    result = response.get(timeout=60)
             except Exception as exc:
                 result = dict(ok=False, error=type(exc).__name__)
             self.wfile.write(json.dumps(result, ensure_ascii=False).encode() + b'\n')
