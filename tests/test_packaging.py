@@ -22,11 +22,11 @@ class PackagingTests(unittest.TestCase):
             package = extracted / 'usr/lib/session-search/session_search'
             self.assertEqual({p.name for p in package.iterdir()},
                              {name + '.py' for name in
-                              ('__init__', 'reader', 'store', 'embedding', 'indexer', 'server', 'tui', 'tui_backend')})
+                              ('__init__', 'reader', 'store', 'embedding', 'indexer', 'server', 'tui', 'tui_backend', 'cpu', 'charts', 'search_history')})
             self.assertTrue((extracted / 'usr/bin/session-search').stat().st_mode & 0o111)
             unit = (extracted / 'usr/lib/systemd/user/codex-session-index.service').read_text()
-            for setting in ('CPUQuota=200%', 'MemoryHigh=4G', 'MemoryMax=5G',
-                            'MemorySwapMax=0', '--threads 2'):
+            for setting in ('CPUQuota=\n', 'MemoryHigh=4G', 'MemoryMax=5G',
+                            'MemorySwapMax=0'):
                 self.assertIn(setting, unit)
             self.assertFalse((extracted / 'home').exists())
 

@@ -68,6 +68,7 @@ class ResourceTests(unittest.TestCase):
         self.backend = Backend(self.tmp.name, self.tmp.name, proc_root=self.root, clock=lambda: self.now)
         self.backend._ticks_per_second = 100
         self.backend._page_size = 4096
+        (self.root/'stat').write_text(''.join(f'cpu{i} 0 0 0 0 0 0 0 0\n' for i in range(8)))
 
     def write_proc(self, ticks=100, start=50, rss=3):
         fields = ['0'] * 22
@@ -78,7 +79,7 @@ class ResourceTests(unittest.TestCase):
         (self.process / 'stat').write_text('42 (worker (CPU) process) ' + ' '.join(fields))
         (self.process / 'statm').write_text(f'100 {rss} 0')
 
-    def test_cpu_delta_per_core_and_first_unknown(self):
+    def test_indexer_cpu_share_of_whole_machine_and_first_unknown(self):
         self.write_proc()
         first = self.backend._resources('42')
         self.assertIsNone(first['cpu_percent'])
@@ -86,7 +87,7 @@ class ResourceTests(unittest.TestCase):
         self.assertEqual(first['process_identity'], '42:50')
         self.now += 2
         self.write_proc(ticks=500)
-        self.assertEqual(self.backend._resources('42')['cpu_percent'], 200.0)
+        self.assertEqual(self.backend._resources('42')['cpu_percent'], 25.0)
 
     def test_pid_reuse_missing_and_zero_are_distinct(self):
         self.write_proc()
@@ -103,6 +104,49 @@ class ResourceTests(unittest.TestCase):
         self.now += 1
         self.assertIsNone(self.backend._resources('42')['cpu_percent'])
         self.assertIsNone(self.backend._resources('0')['process_identity'])
+
+    def test_topology_and_allocation_do_not_determine_cpu_percent(self):
+        with patch('session_search.tui_backend.core_groups', return_value=[[0, 2], [1, 3]]), patch('session_search.tui_backend.read_cores', return_value=1):
+            result = self.backend._host_cpu()
+            self.assertEqual(result['cpu_total'], 2)
+            self.assertEqual(result['cpu_configured'], 1)
+            self.assertNotIn('cpu_average', result)
+            self.write_proc()
+            self.backend._resources('42')
+            self.now += 2
+            # Other programs fully occupy the machine; this process is idle.
+            (self.root/'stat').write_text(''.join(f'cpu{i} 10000 0 0 0 0 0 0 0\n' for i in range(8)))
+            self.assertEqual(self.backend._resources('42')['cpu_percent'], 0)
+
+    def test_cpu_hotplug_invalidates_interval(self):
+        self.write_proc()
+        self.backend._resources('42')
+        self.now += 1
+        self.write_proc(ticks=200)
+        (self.root/'stat').write_text('cpu0 0 0 0 0 0 0 0 0\n')
+        self.assertIsNone(self.backend._resources('42')['cpu_percent'])
+        self.now += 1
+        self.write_proc(ticks=300)
+        self.assertEqual(self.backend._resources('42')['cpu_percent'], 100)
+
+    def test_mcp_counts_only_matching_processes(self):
+        (self.process / 'cmdline').write_bytes(b'python\0-m\0session_search.server\0')
+        self.assertEqual(self.backend._mcp_processes(), 1)
+        (self.process / 'cmdline').write_bytes(b'python\0-c\0session_search.server\0')
+        self.assertEqual(self.backend._mcp_processes(), 0)
+        (self.process / 'cmdline').write_bytes(b'python\0/path/session_search/server.py\0')
+        self.assertEqual(self.backend._mcp_processes(), 1)
+
+    def test_core_setting_saved_and_only_running_service_restarted(self):
+        self.backend.cpu_config = self.root / 'cpu.json'
+        self.backend.systemd_root = self.root / 'systemd'
+        with patch('session_search.tui_backend.core_groups', return_value=[[0, 2], [1, 3]]), patch.object(self.backend, '_run', return_value=subprocess.CompletedProcess([], 0, '', '')) as run:
+            self.assertTrue(self.backend.set_cores(2)['ok'])
+            self.assertEqual(json.loads(self.backend.cpu_config.read_text()), {'cores': 2})
+            self.assertEqual(run.call_args_list[-1].args[0], ['systemctl', '--user', 'try-restart', UNIT])
+            self.assertIn('CPUQuota=\n', (self.backend.systemd_root / (UNIT+'.d') / '90-session-search-cpu.conf').read_text())
+            self.assertFalse(self.backend.set_cores(3)['ok'])
+            self.assertEqual(run.call_count, 2)
 
     def test_missing_rss_and_counter_regression(self):
         self.write_proc(ticks=200)

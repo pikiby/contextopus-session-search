@@ -1,9 +1,9 @@
 Package: session-search
-Version: 0.4.0
+Version: 0.7.3
 Section: utils
 Priority: optional
 Architecture: all
 Maintainer: session-search maintainers
 Depends: python3 (>= 3.12)
-Description: Offline Codex session search for Toolkit
+Description: Offline Codex session search for Contextopus
  Independent indexer and stdio MCP using an existing external Python environment.

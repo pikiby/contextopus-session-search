@@ -260,6 +260,50 @@ class IndexerTests(unittest.TestCase):
             server.server_close()
             server.socket_lock.close()
 
+    def test_mcp_search_history_real_socket(self):
+        import os
+        import threading
+        import time
+        from session_search import server as mcp
+        self.drain()
+        sock = self.home / 'history.sock'
+        rpc = serve(self.actor, sock)
+        results, errors = [], []
+        def client():
+            try:
+                with patch.dict(os.environ, CODEX_SESSION_INDEX_SOCKET=str(sock)):
+                    results.append(mcp.tool_session_search(dict(codex_home=str(self.home), query='Найти задачу')))
+            except Exception as exc:
+                errors.append(exc)
+        thread = threading.Thread(target=client)
+        thread.start()
+        try:
+            deadline = time.monotonic()+5
+            while thread.is_alive() and time.monotonic()<deadline:
+                self.actor.step()
+                time.sleep(.005)
+            thread.join(.1)
+            self.assertFalse(thread.is_alive())
+            self.assertEqual(errors, [])
+            payload = json.loads(results[0][0]['text'])
+            row = self.store.db.execute('SELECT * FROM search_requests').fetchone()
+            self.assertEqual(row['state'], 'completed')
+            self.assertEqual(row['result_count'], len(payload['sessions']))
+            self.assertIn('Найти задачу', row['parameters'])
+            self.assertGreater(row['duration_seconds'], 0)
+            found = self.store.db.execute('SELECT session_id,chunk_id FROM search_results').fetchall()
+            self.assertEqual(len(found), 1)
+            self.assertEqual(found[0]['session_id'], 'sid')
+            self.assertTrue(found[0]['chunk_id'])
+            status = self.actor.status(force=True)
+            self.assertEqual(status['search_metrics']['calls'], 1)
+            self.assertEqual(status['embedding_metrics']['count'], 1)
+            self.assertGreater(status['database_bytes'], 0)
+        finally:
+            rpc.shutdown()
+            rpc.server_close()
+            rpc.socket_lock.close()
+
     def test_socket_rpc_and_ownership(self):
         import os
         import threading
@@ -292,3 +336,14 @@ class IndexerTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class CoreConfigurationTests(unittest.TestCase):
+    def test_affinity_limits_and_rejects_invalid_count(self):
+        from session_search.indexer import configure_cores
+        with patch('session_search.indexer.core_groups', return_value=[[2, 10], [4, 12], [6, 14], [8, 16]]), patch('session_search.indexer.os.sched_setaffinity') as set_affinity:
+            self.assertEqual(configure_cores(2), 2)
+            set_affinity.assert_called_once_with(0, [2, 4])
+            for value in (0, -1, 5, True):
+                with self.assertRaises(ValueError):
+                    configure_cores(value)

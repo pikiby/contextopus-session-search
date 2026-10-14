@@ -10,6 +10,7 @@ import json
 import logging
 import os
 from pathlib import Path
+from .cpu import core_groups, read_cores
 import queue
 import signal
 import socket
@@ -78,7 +79,10 @@ class Indexer:
         self.stopping = threading.Event()
         self.next_sweep = 0
         self.pid = os.getpid()
+        self.cpu_cores = len(core_groups(allowed=os.sched_getaffinity(0)))
         self.started_at = self._timestamp()
+        self.embedding_samples = collections.deque()
+        self.metrics_started = time.monotonic()
         self.activity = None
         self.last_completed_at = None
         self._status_lock = threading.Lock()
@@ -261,14 +265,25 @@ class Indexer:
         now = time.monotonic()
         if self._stats_cache is None or force or (refresh and now - self._stats_refreshed_at >= 2):
             self._stats_cache = self.store.stats()
+            from .search_history import stats as search_stats
+            self._search_stats = search_stats(self.store.db)
             self._stats_refreshed_at = now
         stats = copy.deepcopy(self._stats_cache)
+        while self.embedding_samples and self.embedding_samples[0][0] < now-60:
+            self.embedding_samples.popleft()
+        durations = [duration for _, duration in self.embedding_samples]
+        embedding_metrics = dict(window_seconds=60, count=len(durations),
+                                 average_seconds=sum(durations)/len(durations) if durations else None,
+                                 per_minute=len(durations), observed_seconds=min(60, now-self.metrics_started))
         result = dict(stats=stats, codex_home=str(self.home), errors=dict(self.errors),
                       index_pending=bool(self.next_sweep == 0 or self.dirty or not self.events.empty() or
                                          any(stats['jobs'].values()) or
                                          (self.activity and self.activity['operation'] in ('reconcile', 'read', 'embedding'))),
-                      pid=self.pid, started_at=self.started_at,
+                      pid=self.pid, started_at=self.started_at, cpu_cores=self.cpu_cores, cpu_unit="physical",
                       activity=copy.deepcopy(self.activity), last_completed_at=self.last_completed_at)
+        result['search_metrics'] = copy.deepcopy(self._search_stats)
+        result['embedding_metrics'] = embedding_metrics
+        result['database_bytes'] = self.store.database_bytes()
         with self._status_lock:
             self._status_snapshot = copy.deepcopy(result)
         return result
@@ -279,6 +294,10 @@ class Indexer:
         op = request.get('op')
         if op == 'status':
             return self.status()
+        if op == 'search_history':
+            from .search_history import record
+            record(self.store.db, request['event'])
+            return {}
         if op != 'search':
             raise ValueError('Unknown operation')
         limit = request.get('limit', 10)
@@ -331,7 +350,10 @@ class Indexer:
                 sid = row['session_id'] if row else None
                 path = next((path for path, (session_id, _) in self.paths.items() if session_id == sid), None)
                 with self._working('embedding', sid, path):
-                    self.store.complete_job(job['id'], job['content_hash'], self.embedder.encode([job['text']])[0])
+                    started = time.monotonic()
+                    vector = self.embedder.encode([job['text']])[0]
+                    if self.store.complete_job(job['id'], job['content_hash'], vector):
+                        self.embedding_samples.append((time.monotonic(), time.monotonic()-started))
             except Exception as exc:
                 self.store.fail_job(job['id'], type(exc).__name__)
                 self._error('embedding', exc)
@@ -392,6 +414,15 @@ def serve(actor, path):
     return server
 
 
+def configure_cores(cores):
+    groups = core_groups(allowed=os.sched_getaffinity(0))
+    if isinstance(cores, bool) or not isinstance(cores, int) or not 1 <= cores <= len(groups):
+        raise ValueError(f'cores must be between 1 and {len(groups)} physical cores')
+    # One logical CPU per physical core: SMT siblings are not separate cores.
+    os.sched_setaffinity(0, [group[0] for group in groups[:cores]])
+    return cores
+
+
 def run(args):
     from .embedding import Embedder
     from .store import Store
@@ -401,7 +432,11 @@ def run(args):
     database.parent.mkdir(parents=True, mode=0o700, exist_ok=True)
     with open(str(database) + '.lock', 'a') as lock:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        embedder = Embedder(args.model_path, threads=args.threads)
+        requested = args.cores if args.cores is not None else read_cores()
+        if requested is None:
+            requested = min(args.threads, len(core_groups(allowed=os.sched_getaffinity(0))))
+        cores = configure_cores(requested)
+        embedder = Embedder(args.model_path, threads=cores)
         store = Store(database, embedder.identity, embedder.dimensions)
         actor = Indexer(args.codex_home, store, embedder)
         class Events(FileSystemEventHandler):
@@ -445,7 +480,8 @@ def main():
     parser.add_argument('--database', default=str(Path.home() / '.local/share/codex-session-index/index.sqlite3'))
     parser.add_argument('--socket', default=str(default_socket()))
     parser.add_argument('--model-path')
-    parser.add_argument('--threads', type=int, default=2)
+    parser.add_argument('--cores', type=int, help='Physical cores; overrides saved TUI setting')
+    parser.add_argument('--threads', type=int, default=2, help='Legacy fallback core count when no setting exists')
     run(parser.parse_args())
 
 

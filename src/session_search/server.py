@@ -1,4 +1,9 @@
-"""Read-only stdio MCP for Codex session search."""
+"""Stdio MCP for Codex session search with local request history."""
+import time
+import uuid
+import logging
+from contextvars import ContextVar
+
 import argparse
 import json
 import os
@@ -8,8 +13,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 from . import indexer
 
+_search_results = ContextVar("search_results", default=None)
+
 SERVER_NAME = "session-search"
-SERVER_VERSION = "0.1.0"
+SERVER_VERSION = "0.7.3"
 
 
 SESSION_FILE_RE = re.compile(
@@ -448,6 +455,37 @@ def tool_session_info(arguments):
 
 
 def tool_session_search(arguments):
+    from .search_history import sanitize
+    started_at, started = time.time(), time.monotonic()
+    event_id = uuid.uuid4().hex
+    token = _search_results.set([])
+    def log(event):
+        try:
+            indexer.request_index({'op': 'search_history', 'event': sanitize(event),
+                                   'codex_home': str(codex_home(arguments))}, timeout=2)
+        except (OSError, ValueError, RuntimeError):
+            # A history write failure must not replace the search result.
+            logging.warning('Search history unavailable request_id=%s', event_id)
+    log(dict(phase='start', id=event_id, started_at=started_at, parameters=arguments))
+    try:
+        content = _tool_session_search(arguments)
+        payload = json.loads(content[0]['text'])
+        results = _search_results.get() or [dict(session_id=item.get('id')) for item in payload.get('sessions', [])]
+        event = dict(phase='finish', id=event_id, finished_at=time.time(), duration_seconds=time.monotonic()-started,
+                     result_count=len(payload.get('sessions', [])), results=results)
+    except Exception as exc:
+        event = dict(phase='finish', id=event_id, finished_at=time.time(), duration_seconds=time.monotonic()-started,
+                     error=type(exc).__name__ + ': ' + str(exc), results=[])
+        log(event)
+        raise
+    else:
+        log(event)
+        return content
+    finally:
+        _search_results.reset(token)
+
+
+def _tool_session_search(arguments):
     mode = enum_value(arguments, "mode", ["semantic", "literal"], "semantic")
     if mode == "semantic":
         return tool_session_semantic_search(arguments)
@@ -500,6 +538,8 @@ def tool_session_semantic_search(arguments):
         raise ValueError(f"Session indexer unavailable: {exc}. Check codex-session-index.service") from exc
     if not result.get("ok"):
         raise ValueError(result.get("error", "Session indexer failed"))
+    if _search_results.get() is not None:
+        _search_results.set([dict(session_id=m['session']['id'], chunk_id=m['id'], distance=m['distance']) for m in result.get('matches', [])])
     names = load_session_index(home)
     sessions = {}
     for match in result.get("matches", []):

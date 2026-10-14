@@ -6,19 +6,53 @@ import subprocess
 import tomllib
 import time
 from . import indexer, server
-from .embedding import DEFAULT_MODEL_PATH
+from .embedding import DEFAULT_MODEL_PATH, MODEL
+from .cpu import core_groups, read_cores, save_cores
 
 UNIT = 'codex-session-index.service'
 
 class Backend:
-    def __init__(self, codex_home=None, model_path=None, *, proc_root="/proc", clock=None):
+    def __init__(self, codex_home=None, model_path=None, *, proc_root="/proc", clock=None, cpu_root="/sys/devices/system/cpu", cpu_config=None, systemd_root=None):
         self.home = Path(codex_home or os.environ.get('CODEX_HOME', '~/.codex')).expanduser()
         self.model_path = Path(model_path or DEFAULT_MODEL_PATH)
         self.proc_root = Path(proc_root)
+        self.cpu_root = cpu_root
+        self.cpu_config = cpu_config
+        self.systemd_root = Path(systemd_root) if systemd_root else Path(os.environ.get("XDG_CONFIG_HOME", str(Path.home() / ".config"))) / "systemd/user"
         self.clock = clock or time.monotonic
         self._cpu_sample = None
         self._ticks_per_second = os.sysconf('SC_CLK_TCK')
         self._page_size = os.sysconf('SC_PAGE_SIZE')
+
+    def _host_cpu(self):
+        result = dict(cpu_total=None, cpu_available=None, cpu_configured=None)
+        try:
+            result['cpu_total'] = len(core_groups(self.cpu_root))
+            result['cpu_available'] = len(core_groups(self.cpu_root, os.sched_getaffinity(0)))
+            result['cpu_configured'] = read_cores(self.cpu_config) or min(2, result['cpu_available'])
+        except (OSError, ValueError):
+            pass
+        return result
+
+    def set_cores(self, count):
+        try:
+            available = len(core_groups(self.cpu_root, os.sched_getaffinity(0)))
+            if isinstance(count, bool) or not isinstance(count, int) or not 1 <= count <= available:
+                raise ValueError(f'Select 1–{available} physical cores')
+            save_cores(count, self.cpu_config)
+            # Older user units may retain CPUQuota=200%; affinity now bounds CPU use.
+            directory = self.systemd_root / (UNIT + '.d')
+            directory.mkdir(parents=True, exist_ok=True)
+            (directory / '90-session-search-cpu.conf').write_text('[Service]\nCPUQuota=\n')
+            result = self._run(['systemctl', '--user', 'daemon-reload'])
+            if result.returncode:
+                return {'ok': False, 'output': 'Saved; daemon-reload failed: ' + result.stderr.strip()}
+            result = self._run(['systemctl', '--user', 'try-restart', UNIT])
+            if result.returncode:
+                return {'ok': False, 'output': 'Saved; restart failed: ' + result.stderr.strip()}
+            return {'ok': True}
+        except (OSError, ValueError) as exc:
+            return {'ok': False, 'output': str(exc)}
 
     def _resources(self, pid):
         result = dict(cpu_percent=None, memory_bytes=None, process_identity=None)
@@ -32,17 +66,23 @@ class Backend:
             ticks = int(fields[11]) + int(fields[12])
             identity = f'{pid}:{int(fields[19])}'
             now = self.clock()
+            # Normalize indexer CPU time to the entire machine, not its affinity.
+            online = tuple(line.split()[0] for line in (self.proc_root / 'stat').read_text().splitlines()
+                           if line.split() and line.split()[0].startswith('cpu')
+                           and line.split()[0][3:].isdigit())
+            if not online:
+                raise ValueError('Online CPU count unavailable')
         except (OSError, ValueError, TypeError, IndexError):
             self._cpu_sample = None
             return result
         result['process_identity'] = identity
         previous = self._cpu_sample
-        if previous and previous[0] == identity:
+        if previous and previous[0] == identity and previous[3] == online:
             elapsed = now - previous[2]
             delta = ticks - previous[1]
             if elapsed > 0 and delta >= 0:
-                result['cpu_percent'] = 100.0 * delta / self._ticks_per_second / elapsed
-        self._cpu_sample = (identity, ticks, now)
+                result['cpu_percent'] = min(100.0, 100.0 * delta / self._ticks_per_second / elapsed / len(online))
+        self._cpu_sample = (identity, ticks, now, online)
         try:
             resident_pages = int((directory / 'statm').read_text().split()[1])
             if resident_pages >= 0:
@@ -73,6 +113,30 @@ class Backend:
         except (OSError, ValueError, TypeError):
             return None
 
+    def _mcp_processes(self):
+        """Count this user's stdio servers, independent of the client wrapper."""
+        count = 0
+        try:
+            processes = list(self.proc_root.iterdir())
+        except OSError:
+            return None
+        for process in processes:
+            if not process.name.isdigit():
+                continue
+            try:
+                if process.stat().st_uid != os.getuid():
+                    continue
+                args = (process / 'cmdline').read_bytes().decode(errors='replace').split('\0')
+                module = any(args[i:i+2] == ['-m', 'session_search.server'] for i in range(len(args)-1))
+                script = any(Path(arg).name == 'server.py' and Path(arg).parent.name == 'session_search' for arg in args[1:2])
+                if module or script:
+                    count += 1
+            except (FileNotFoundError, ProcessLookupError):
+                continue
+            except PermissionError:
+                return None
+        return count
+
     def status(self):
         unit = self._run(['systemctl', '--user', 'show', UNIT, '--property=ActiveState,SubState,MainPID,UnitFileState'])
         props = dict(line.split('=', 1) for line in unit.stdout.splitlines() if '=' in line)
@@ -86,6 +150,17 @@ class Backend:
                       sessions=None, chunks=None, vectors=None, pending=None, errors=None,
                       index_pending=None, operation='unknown', session_id=None, path=None, operation_started_at=None, index_available=False, last_progress=None, index_error=None)
         result.update(self._resources(result['pid']))
+        result.update(self._host_cpu())
+        result['model_name'] = MODEL
+        result['mcp_processes'] = self._mcp_processes()
+        result['memory_total'] = None
+        try:
+            for line in (self.proc_root / 'meminfo').read_text().splitlines():
+                if line.startswith('MemTotal:'):
+                    result['memory_total'] = int(line.split()[1]) * 1024
+        except (OSError, ValueError, IndexError):
+            pass
+        result['cpu_cores'] = None
         if unit.returncode:
             result['service_error'] = unit.stderr.strip()
         try:
@@ -93,6 +168,8 @@ class Backend:
             if not snapshot.get('ok'):
                 raise ValueError(snapshot.get('error', 'Indexer status failed'))
             result['index_available'] = True
+            result.update({key: snapshot.get(key) for key in ('embedding_metrics', 'database_bytes', 'search_metrics')})
+            result['cpu_cores'] = snapshot.get('cpu_cores') if snapshot.get('cpu_unit') == 'physical' else None
             result['index_pending'] = snapshot.get('index_pending')
             stats = snapshot.get('stats', {})
             result.update({key: stats.get(key) for key in ('sessions', 'chunks', 'vectors')})

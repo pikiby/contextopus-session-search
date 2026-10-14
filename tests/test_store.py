@@ -112,6 +112,27 @@ class StoreTests(unittest.TestCase):
         self.assertEqual([r['id'] for r in all_results], ['s:0', 'active:0'])
         self.assertEqual(self.store.search((1, 0), limit=0), [])
 
+    def test_newest_session_then_newest_fragment_and_existing_queue_migration(self):
+        def add(sid, modified, offsets):
+            self.store.ingest({'id': sid}, {'mtime_ns': modified},
+                [{'id': f'{sid}:{offset}', 'text': 'text', 'start_offset': offset, 'end_offset': offset+1} for offset in offsets])
+        add('old', 10, [0, 10])
+        add('new', 20, [0, 10])
+        # Simulate the previous queue schema; reopening must migrate pending jobs.
+        self.store.db.execute('DROP INDEX jobs_newest')
+        self.store.db.execute('ALTER TABLE jobs DROP COLUMN source_offset')
+        self.store.db.execute('ALTER TABLE jobs DROP COLUMN priority_ns')
+        self.store.db.commit()
+        self.store.close()
+        self.store = Store(self.path, 'test-model', 2)
+        self.assertEqual(self.store.claim_job()['chunk_id'], 'new:10')
+        self.assertEqual(self.store.claim_job()['chunk_id'], 'new:0')
+        # Updating an older session reprioritizes its already queued fragments.
+        add('old', 30, [20])
+        self.assertEqual(self.store.claim_job()['chunk_id'], 'old:20')
+        self.assertEqual(self.store.claim_job()['chunk_id'], 'old:10')
+        self.assertEqual(self.store.claim_job()['chunk_id'], 'old:0')
+
     def test_identity_mismatch_rejected(self):
         with self.assertRaises(ValueError):
             Store(self.path, 'different-model', 2)

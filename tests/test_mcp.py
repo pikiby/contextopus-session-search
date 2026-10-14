@@ -67,7 +67,7 @@ class MCPTests(unittest.TestCase):
         match = {'session': {'id': SID, 'cwd': '/tmp/project', 'path': str(self.path)}, 'state': 'active', 'distance': .2, 'text': 'Найти задачу', 'id': 4, 'start_offset': 10, 'end_offset': 50, 'role': 'user', 'turn_id': 'turn', 'part': 0, 'question_start_offset': 10}
         with patch.object(server.indexer, 'request_index', return_value={'ok': True, 'matches': [match, dict(match, id=5)], 'stats': {'pending': 2}, 'index_pending': True}) as client:
             response = server.handle_request(self.call('session_search', {'codex_home': str(self.home), 'query': 'task', 'include_snippets': True}))
-        client.assert_called_once_with({'op': 'search', 'query': 'task', 'state': 'all', 'limit': 20, 'codex_home': str(self.home)})
+        client.assert_any_call({'op': 'search', 'query': 'task', 'state': 'all', 'limit': 20, 'codex_home': str(self.home)})
         result = json.loads(response['result']['content'][0]['text'])
         self.assertEqual(result['total'], 1)
         self.assertTrue(result['index_pending'])
@@ -79,7 +79,7 @@ class MCPTests(unittest.TestCase):
         with patch.object(server.indexer, 'request_index', return_value={'ok': True, 'stats': {'pending': 0}}) as client:
             response = server.handle_request(self.call('index_status', {'codex_home': str(self.home)}))
         self.assertFalse(response['result']['isError'])
-        client.assert_called_once_with({'op': 'status', 'codex_home': str(self.home)})
+        client.assert_any_call({'op': 'status', 'codex_home': str(self.home)})
         with patch.object(server.indexer, 'request_index', side_effect=OSError('unavailable')):
             response = server.handle_request(self.call('session_search', {'codex_home': str(self.home), 'query': 'task'}))
         self.assertTrue(response['result']['isError'])

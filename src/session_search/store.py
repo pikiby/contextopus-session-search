@@ -4,6 +4,7 @@ import json
 import sqlite3
 import struct
 import time
+from pathlib import Path
 
 
 class Store:
@@ -13,6 +14,7 @@ class Store:
         import sqlite_vec
         self.db = sqlite3.connect(str(path))
         self.db.row_factory = sqlite3.Row
+        self.path = Path(path)
         self.dimensions = dimensions
         self.max_attempts = max_attempts
         self.db.enable_load_extension(True)
@@ -33,11 +35,26 @@ class Store:
         if existing and existing[0] != identity:
             self.db.close()
             raise ValueError('Embedding model or dimensions mismatch; rebuild index explicitly')
+        from .search_history import initialize
+        initialize(self.db)
+        columns = {row[1] for row in self.db.execute('PRAGMA table_info(jobs)')}
+        with self.db:
+            if 'priority_ns' not in columns:
+                self.db.execute('ALTER TABLE jobs ADD COLUMN priority_ns INTEGER NOT NULL DEFAULT 0')
+                self.db.execute('ALTER TABLE jobs ADD COLUMN source_offset INTEGER NOT NULL DEFAULT 0')
+                self.db.execute("""UPDATE jobs SET
+                    priority_ns=COALESCE((SELECT json_extract(s.checkpoint,'$.mtime_ns')
+                        FROM chunks c JOIN sessions s ON s.id=c.session_id WHERE c.pk=jobs.chunk_pk),0),
+                    source_offset=COALESCE((SELECT start_offset FROM chunks WHERE pk=jobs.chunk_pk),0)""")
+            self.db.execute('CREATE INDEX IF NOT EXISTS jobs_newest ON jobs(priority_ns DESC,source_offset DESC,id DESC)')
         with self.db:
             self.db.execute("INSERT OR IGNORE INTO metadata VALUES('embedding_identity',?)", (identity,))
             self.db.execute(f'CREATE VIRTUAL TABLE IF NOT EXISTS vectors USING vec0(embedding float[{int(dimensions)}])')
             self.db.execute("UPDATE jobs SET state='pending' WHERE state='running' AND attempts<?", (self.max_attempts,))
             self.db.execute("UPDATE jobs SET state='failed',error='Interrupted final attempt' WHERE state='running'", ())
+
+    def database_bytes(self):
+        return sum(p.stat().st_size for p in (self.path, Path(str(self.path)+'-wal'), Path(str(self.path)+'-shm')) if p.exists())
 
     def close(self):
         self.db.close()
@@ -82,6 +99,8 @@ class Store:
         with self.db:
             self.db.execute('INSERT INTO sessions VALUES(?,?,?,?) ON CONFLICT(id) DO UPDATE SET metadata=excluded.metadata,state=excluded.state,checkpoint=excluded.checkpoint',
                             (session_id, json.dumps(session), state, json.dumps(checkpoint)))
+            priority = int(checkpoint.get('mtime_ns', 0))
+            self.db.execute('UPDATE jobs SET priority_ns=? WHERE chunk_pk IN (SELECT pk FROM chunks WHERE session_id=?) AND priority_ns<>?', (priority, session_id, priority))
             for chunk in chunks:
                 digest = hashlib.sha256(chunk['text'].encode('utf-8')).hexdigest()
                 old = self.db.execute('SELECT pk,content_hash,session_id FROM chunks WHERE id=?', (chunk['id'],)).fetchone()
@@ -93,12 +112,12 @@ class Store:
                 if not old or old['content_hash'] != digest:
                     self.db.execute('DELETE FROM vectors WHERE rowid=?', (pk,))
                     self.db.execute('DELETE FROM jobs WHERE chunk_pk=?', (pk,))
-                    self.db.execute("INSERT INTO jobs(chunk_pk,content_hash,state) VALUES(?,?,'pending')", (pk, digest))
+                    self.db.execute("INSERT INTO jobs(chunk_pk,content_hash,state,priority_ns,source_offset) VALUES(?,?,'pending',?,?)", (pk, digest, priority, chunk['start_offset']))
 
     def claim_job(self, now=None):
         now = time.time() if now is None else now
         with self.db:
-            row = self.db.execute("SELECT j.*,c.text,c.id AS chunk_id FROM jobs j JOIN chunks c ON c.pk=j.chunk_pk WHERE j.state IN ('pending','failed') AND j.attempts<? AND j.next_attempt<=? ORDER BY j.id LIMIT 1", (self.max_attempts, now)).fetchone()
+            row = self.db.execute("SELECT j.*,c.text,c.id AS chunk_id FROM jobs j JOIN chunks c ON c.pk=j.chunk_pk WHERE j.state IN ('pending','failed') AND j.attempts<? AND j.next_attempt<=? ORDER BY j.priority_ns DESC,j.source_offset DESC,j.id DESC LIMIT 1", (self.max_attempts, now)).fetchone()
             if row is None:
                 return None
             self.db.execute("UPDATE jobs SET state='running',attempts=attempts+1 WHERE id=?", (row['id'],))
