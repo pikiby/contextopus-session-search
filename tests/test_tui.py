@@ -14,6 +14,12 @@ class Backend:
         self.calls.append(('cores', count))
         self.snapshot['cpu_configured'] = count
         return {'ok': True}
+    def set_selection(self, state, enabled):
+        self.calls.append(('selection', state, enabled))
+        selection = dict(self.snapshot.get('session_selection') or {'active': True, 'archived': False})
+        selection[state] = enabled
+        self.snapshot['session_selection'] = selection
+        return {'ok': True}
     def status(self):
         return dict(self.snapshot)
     def action(self, name):
@@ -54,6 +60,31 @@ class TuiTests(unittest.IsolatedAsyncioTestCase):
             await pilot.press('q')
         self.assertEqual(backend.calls, ['stop', 'start'])
 
+    async def test_manual_indexer_renders_resources_and_toggle_does_not_control_service(self):
+        backend = Backend()
+        backend.snapshot.update(service='inactive', pid='123', service_pid='0',
+                                indexer_running=True, indexer_managed=False,
+                                cpu_percent=25.0, memory_bytes=1024**3, cpu_cores=2)
+        app = SessionSearchApp(backend, refresh_interval=0)
+        async with app.run_test(size=(80, 40)) as pilot:
+            await self.settle(app, pilot)
+            self.assertIn('Indexing running', self.text(app, 'state'))
+            self.assertIn('25.0%', self.text(app, 'cpu-value'))
+            self.assertIn('1.00 GiB', self.text(app, 'memory'))
+            self.assertEqual(app.histories['cpu'][-1][1], 25.0)
+            self.assertEqual(app.histories['ram'][-1][1], 100.0)
+            self.assertNotIn('Start indexing', self.text(app, 'toggle'))
+            await pilot.press('s')
+            await self.settle(app, pilot)
+            self.assertEqual(backend.calls, [])
+            self.assertIn('Ctrl+C', self.text(app, 'state'))
+            app._action_error = None
+            app.render_status(dict(backend.snapshot, index_pending=False))
+            self.assertIn('Indexing idle', self.text(app, 'state'))
+            await pilot.press('enter')
+            await self.settle(app, pilot)
+            self.assertEqual(backend.calls, [])
+
     async def test_arrow_selection_enter_and_visible_commands(self):
         backend = Backend()
         app = SessionSearchApp(backend, refresh_interval=0)
@@ -63,17 +94,17 @@ class TuiTests(unittest.IsolatedAsyncioTestCase):
                 widget = app.query_one('#' + name)
                 self.assertGreater(widget.region.height, 0, name)
                 self.assertTrue(widget.display, name)
-            await pilot.press('down', 'down', 'down')
+            await pilot.press('down', 'down', 'down', 'down', 'down')
             self.assertEqual(self.text(app, 'quit'), '▶ Quit')
             self.assertEqual(backend.calls, [])
-            await pilot.press('up', 'up', 'up', 'enter')
+            await pilot.press('up', 'up', 'up', 'up', 'up', 'enter')
             await self.settle(app, pilot)
             self.assertEqual(backend.calls, ['stop'])
             self.assertEqual(self.text(app, 'toggle'), '▶ Start indexing')
             await pilot.press('enter')
             await self.settle(app, pilot)
             self.assertEqual(backend.calls, ['stop', 'start'])
-            await pilot.press('down', 'down', 'down', 'enter')
+            await pilot.press('down', 'down', 'down', 'down', 'down', 'enter')
         self.assertEqual(backend.calls, ['stop', 'start'])
 
     async def test_autostart_independent_from_running_and_mcp_display(self):
@@ -92,10 +123,31 @@ class TuiTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(backend.calls, ['disable', 'enable'])
             app.render_status(dict(app.last_status, mcp_processes=2))
             self.assertIn('Running (2)', self.text(app, 'mcp'))
-            await pilot.press('down')
+            await pilot.press('down', 'down', 'down')
             await pilot.pause()
             self.assertLessEqual(app.query_one('#quit').region.bottom, 24)
             self.assertLess(app.query_one('#cpu-chart').region.x, app.query_one('#ram-chart').region.x)
+
+    async def test_session_selection_works_while_stopped(self):
+        backend = Backend()
+        backend.snapshot.update(service='inactive', chunks=5, vectors=3, sessions=2, search_metrics={'calls': 7})
+        app = SessionSearchApp(backend, refresh_interval=0)
+        async with app.run_test(size=(80, 40)) as pilot:
+            await self.settle(app, pilot)
+            self.assertIn('3 / 5', self.text(app, 'indexed'))
+            self.assertIn('Sessions        2', self.text(app, 'sessions'))
+            self.assertIn('Requests        7', self.text(app, 'requests'))
+            self.assertIn('N/A', self.text(app, 'eta'))
+            self.assertIn('Active sessions Enabled', self.text(app, 'active-sessions'))
+            self.assertIn('Archived sessions Disabled', self.text(app, 'archived-sessions'))
+            await pilot.press('down', 'down', 'down', 'enter')
+            await self.settle(app, pilot)
+            await pilot.press('down', 'enter')
+            await self.settle(app, pilot)
+            self.assertEqual(backend.calls, [('selection', 'active', False), ('selection', 'archived', True)])
+            self.assertEqual(backend.snapshot['service'], 'inactive')
+            self.assertIn('Active sessions Disabled', self.text(app, 'active-sessions'))
+            self.assertIn('Archived sessions Enabled', self.text(app, 'archived-sessions'))
 
     async def test_core_selection_applies_only_on_enter(self):
         backend = Backend()

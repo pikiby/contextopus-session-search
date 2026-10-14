@@ -61,7 +61,7 @@ class EmbedderTests(unittest.TestCase):
                          [f'Instruct: {embedding.QUERY_INSTRUCTION}\nQuery: Найти задачу'])
 
     def test_invalid_vector(self):
-        for vector in ([0.0]*1024, [float('nan')]*1024, [1.0]*1024, [1.0]):
+        for vector in ([0.0]*1024, [float('nan')]*1024, [1.0]):
             with self.subTest(vector_length=len(vector)):
                 self.embedder.model.encode = lambda *a, **kw: SimpleNamespace(tolist=lambda: [vector])
                 with self.assertRaises(ValueError):
@@ -70,3 +70,18 @@ class EmbedderTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+class ReductionTests(unittest.TestCase):
+    def test_mrl_normalizes_after_slicing_and_validates_limits(self):
+        e = object.__new__(embedding.Embedder)
+        e.dimensions = 256
+        e.max_length = 512
+        e.count_tokens = len
+        e.model = FakeModel()
+        e.model.encode = lambda *a, **kw: SimpleNamespace(tolist=lambda: [[1.0]*1024])
+        vector = e.encode(['text'])[0]
+        self.assertEqual(len(vector), 256)
+        self.assertAlmostEqual(sum(x*x for x in vector), 1)
+        for kwargs in ({'dimensions': 0}, {'dimensions': 1025}, {'max_length': 50000}):
+            with self.assertRaises(ValueError):
+                embedding.Embedder(**kwargs)

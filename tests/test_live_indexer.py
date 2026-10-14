@@ -40,6 +40,10 @@ def main():
         archived.write_bytes(record('session_meta', id=archid, cwd='/fixture/linux')+
                              message('Проверить сбой сна Linux Mint и восстановление окон рабочего стола.'))
         (home/'session_index.jsonl').write_text(json.dumps({'id':sid,'thread_name':'Fixture PostgreSQL'})+'\n')
+        config = root/'config'
+        (config/'session-search').mkdir(parents=True)
+        (config/'session-search/sessions.json').write_text(json.dumps({'active':True,'archived':True}))
+        env = dict(os.environ, XDG_CONFIG_HOME=str(config))
         process = None
         log = root/'indexer.log'
         def start():
@@ -47,7 +51,7 @@ def main():
             output = open(log,'ab')
             process = subprocess.Popen([sys.executable, '-m', 'session_search.indexer', '--codex-home',str(home),
                 '--database',str(db),'--socket',str(sock),'--threads','2'],stdout=output,stderr=output,
-                env=dict(os.environ,HF_HUB_OFFLINE='1',TRANSFORMERS_OFFLINE='1',PYTHONDONTWRITEBYTECODE='1'))
+                env=dict(env,HF_HUB_OFFLINE='1',TRANSFORMERS_OFFLINE='1',PYTHONDONTWRITEBYTECODE='1'))
             output.close()
         def stop():
             nonlocal process
@@ -59,7 +63,7 @@ def main():
                 process = None
         def rpc(payload):
             return request_index(dict(payload,codex_home=str(home)), sock, timeout=15)
-        def settle(expected_sessions=None, expected_vectors=None):
+        def settle(expected_sessions=None, expected_vectors=None, changed_path=None):
             deadline = time.monotonic()+40
             while time.monotonic()<deadline:
                 if process.poll() is not None:
@@ -67,7 +71,13 @@ def main():
                 try:
                     result=rpc({'op':'status'})
                     stats=result['stats']
-                    if (not result['index_pending'] and not result['errors'] and
+                    current = True
+                    if changed_path is not None:
+                        with sqlite3.connect(db) as connection:
+                            cp = connection.execute('SELECT checkpoint FROM sessions WHERE id=?',(sid,)).fetchone()
+                        cp = json.loads(cp[0]) if cp else {}
+                        current = cp.get('mtime_ns') == changed_path.stat().st_mtime_ns and cp.get('exhausted')
+                    if (current) and (not result['index_pending'] and not result['errors'] and
                         (expected_sessions is None or stats['sessions']==expected_sessions) and
                         (expected_vectors is None or stats['vectors']==expected_vectors)):
                         return stats
@@ -83,7 +93,7 @@ def main():
             start(); initial=settle(2,2)
             result=search('Где была задача настроить логическую репликацию PostgreSQL?')
             assert result[0]['session']['id']==sid
-            assert result[0]['text'].startswith('Configure PostgreSQL')
+            assert result[0]['text'].startswith('User: Configure PostgreSQL')
             evidence['checks']['cross_language_ru_to_en']=True
             result=search('Find the task about Linux Mint suspend failure','archived')
             assert result[0]['session']['id']==archid
@@ -91,20 +101,20 @@ def main():
             with path.open('ab') as stream:
                 stream.write(record('event_msg',type='task_started',turn_id='clickhouse-turn')+
                              message('Create a ClickHouse read-only user and grant access to dashboard tables.'))
-            settle(2,3)
+            settle(2,2,changed_path=path)
             assert 'ClickHouse' in search('Найти задачу создать пользователя ClickHouse')[0]['text']
             evidence['checks']['observer_append_embedded']=True
-            cp=snapshot();stop();start();after=settle(2,3)
+            cp=snapshot();stop();start();after=settle(2,2)
             assert snapshot()==cp
             evidence['checks']['restart_checkpoint_and_vector_count_unchanged']=True
             moved=home/'archived_sessions'/path.name;path.rename(moved)
             # Restart gives a bounded startup reconciliation instead of sleeping60s.
-            stop();start();settle(2,3)
+            stop();start();settle(2,2)
             assert search('репликация PostgreSQL','active')==[]
             assert search('репликация PostgreSQL','archived')[0]['session']['id']==sid
             evidence['checks']['archive_rename_state_filter']=True
             moved.write_bytes(meta+message('Fix the Linux network DNS resolver configuration.'))
-            settle(2,2)
+            settle(2,2,changed_path=moved)
             assert 'DNS' in search('Найти задачу исправить настройки DNS')[0]['text']
             evidence['checks']['truncate_replacement_removes_old_vectors']=True
             archived.unlink();stop();start();settle(1,1)
@@ -113,7 +123,7 @@ def main():
                 request={'jsonrpc':'2.0','id':1,'method':'tools/call','params':{'name':'session_search',
                     'arguments':{'codex_home':str(home),'query':'Как исправить настройки DNS?','state':'archived','limit':5,'include_snippets':True}}}
                 output=subprocess.run([sys.executable,'-m',args.server],input=json.dumps(request)+'\n',text=True,
-                    capture_output=True,timeout=20,env=dict(os.environ,CODEX_SESSION_INDEX_SOCKET=str(sock)))
+                    capture_output=True,timeout=20,env=dict(env,CODEX_SESSION_INDEX_SOCKET=str(sock)))
                 assert output.returncode==0,output.stderr
                 response=json.loads(output.stdout.strip().splitlines()[-1])
                 assert not response['result'].get('isError'),response

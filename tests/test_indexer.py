@@ -34,7 +34,7 @@ class IndexerTests(unittest.TestCase):
         self.path.write_bytes(record('session_meta', id='sid', cwd='/example') + message('user', 'question'))
         self.store = Store(self.home / 'index.sqlite3', 'fake-test', 2)
         self.addCleanup(self.store.close)
-        self.actor = Indexer(self.home, self.store, Embedder())
+        self.actor = Indexer(self.home, self.store, Embedder(), selection_path=self.home / 'selection.json')
 
     def drain(self):
         for _ in range(100):
@@ -49,16 +49,19 @@ class IndexerTests(unittest.TestCase):
             stream.write(message('assistant', 'answer'))
         self.actor.mark(self.path)
         self.drain()
-        self.assertEqual(self.store.stats()['vectors'], 2)
-        self.actor = Indexer(self.home, self.store, Embedder())
+        self.assertEqual(self.store.stats()['vectors'], 1)
+        self.actor = Indexer(self.home, self.store, Embedder(), selection_path=self.home / 'selection.json')
         self.drain()
-        self.assertEqual(self.store.stats()['chunks'], 2)
+        self.assertEqual(self.store.stats()['chunks'], 1)
         archived = self.home / 'archived_sessions' / self.path.name
         self.path.rename(archived)
+        from session_search.settings import save_selection
+        save_selection('archived', True, self.home / 'selection.json')
+        self.actor.selection['archived'] = True
         self.actor.reconcile()
         self.drain()
         matches = self.actor.handle_request(dict(op='search', query='question', state='archived'))['matches']
-        self.assertEqual(len(matches), 2)
+        self.assertEqual(len(matches), 1)
         self.assertEqual(matches[0]['session']['path'], str(archived))
         archived.unlink()
         self.actor.reconcile()
@@ -74,7 +77,7 @@ class IndexerTests(unittest.TestCase):
         self.drain()
         matches = self.actor.handle_request(dict(op='search', query='new'))['matches']
         self.assertEqual(len(matches), 1)
-        self.assertEqual(matches[0]['text'], 'different')
+        self.assertEqual(matches[0]['text'], 'User: different')
 
     def test_replacement_new_identity_without_sweep(self):
         self.drain()
@@ -115,7 +118,7 @@ class IndexerTests(unittest.TestCase):
             stream.write(answer[15:])
         self.actor.mark(self.path)
         self.drain()
-        self.assertEqual(self.store.stats()['chunks'], 2)
+        self.assertEqual(self.store.stats()['chunks'], 1)
         self.path.write_bytes(record('session_meta', id='sid'))
         self.actor.mark(self.path)
         self.drain()
@@ -126,7 +129,7 @@ class IndexerTests(unittest.TestCase):
             stream.write(record('response_item', type='function_call_output', output='x' * (1024 * 1024)))
             stream.write(message('assistant', 'last answer'))
         self.drain()
-        self.assertEqual(self.store.stats()['chunks'], 2)
+        self.assertEqual(self.store.stats()['chunks'], 1)
         with patch('session_search.reader.read_increment', side_effect=AssertionError('unchanged read')):
             self.actor.process_file(str(self.path))
         self.assertFalse(self.actor.errors)
@@ -150,7 +153,7 @@ class IndexerTests(unittest.TestCase):
     def test_transient_empty_known_preserves_until_header_written(self):
         self.drain()
         self.path.write_bytes(b'')
-        self.actor = Indexer(self.home, self.store, Embedder())
+        self.actor = Indexer(self.home, self.store, Embedder(), selection_path=self.home / 'selection.json')
         self.drain()
         self.assertEqual(self.store.stats()['sessions'], 1)
         self.assertEqual(self.store.stats()['chunks'], 1)

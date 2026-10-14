@@ -16,6 +16,9 @@ class MCPTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.home = Path(self.temp.name)
+        environment = patch.dict(os.environ, XDG_CONFIG_HOME=str(self.home / 'config'))
+        environment.start()
+        self.addCleanup(environment.stop)
         folder = self.home / 'sessions'
         folder.mkdir()
         self.path = folder / f'rollout-2026-10-12T01-00-00-{SID}.jsonl'
@@ -64,7 +67,7 @@ class MCPTests(unittest.TestCase):
         self.assertTrue(out[5]['result']['isError'])
 
     def test_semantic_default_grouping_and_offsets(self):
-        match = {'session': {'id': SID, 'cwd': '/tmp/project', 'path': str(self.path)}, 'state': 'active', 'distance': .2, 'text': 'Найти задачу', 'id': 4, 'start_offset': 10, 'end_offset': 50, 'role': 'user', 'turn_id': 'turn', 'part': 0, 'question_start_offset': 10}
+        match = {'session': {'id': SID, 'cwd': '/tmp/project', 'path': str(self.path)}, 'state': 'active', 'distance': .2, 'text': 'Найти задачу', 'id': 4, 'start_offset': 10, 'end_offset': 50, 'role': 'user', 'turn_id': 'turn', 'part': 0, 'question_start_offset': 10, 'sources': [{'role': 'user', 'turn_id': 'turn', 'start_offset': 10, 'end_offset': 30, 'char_start': 0, 'char_end': 12}, {'role': 'assistant', 'turn_id': 'turn', 'start_offset': 30, 'end_offset': 50, 'char_start': 0, 'char_end': 8}]}
         with patch.object(server.indexer, 'request_index', return_value={'ok': True, 'matches': [match, dict(match, id=5)], 'stats': {'pending': 2}, 'index_pending': True}) as client:
             response = server.handle_request(self.call('session_search', {'codex_home': str(self.home), 'query': 'task', 'include_snippets': True}))
         client.assert_any_call({'op': 'search', 'query': 'task', 'state': 'all', 'limit': 20, 'codex_home': str(self.home)})
@@ -74,6 +77,30 @@ class MCPTests(unittest.TestCase):
         self.assertEqual(result['sessions'][0]['name'], 'Search task')
         self.assertEqual(len(result['sessions'][0]['snippets']), 2)
         self.assertEqual(result['sessions'][0]['snippets'][0]['start_offset'], 10)
+        self.assertEqual(result['sessions'][0]['snippets'][0]['source']['sources'], match['sources'])
+
+    def test_disabled_search_groups_cannot_be_overridden_and_info_readable(self):
+        from session_search.settings import save_selection
+        archived = self.home / 'archived_sessions'
+        archived.mkdir()
+        self.path.rename(archived / self.path.name)
+        arguments = {'codex_home': str(self.home), 'query': 'задачу', 'mode': 'literal', 'state': 'archived'}
+        result = json.loads(server._tool_session_search(arguments)[0]['text'])
+        self.assertEqual(result['total'], 0)
+        info = json.loads(server.tool_session_info({'codex_home': str(self.home), 'session': SID})[0]['text'])
+        self.assertEqual(info['state'], 'archived')
+        save_selection('archived', True)
+        self.assertEqual(json.loads(server._tool_session_search(arguments)[0]['text'])['total'], 1)
+        save_selection('active', False)
+        save_selection('archived', False)
+        self.assertEqual(json.loads(server._tool_session_search(dict(arguments, state='all'))[0]['text'])['total'], 0)
+
+    def test_semantic_response_respects_disabled_group(self):
+        match = {'session': {'id': SID}, 'state': 'archived'}
+        with patch.object(server.indexer, 'request_index', return_value={'ok': True, 'matches': [match]}):
+            result = json.loads(server.tool_session_semantic_search({'codex_home': str(self.home), 'query': 'task', 'state': 'archived'})[0]['text'])
+        self.assertEqual(result['total'], 0)
+        self.assertEqual(result['session_selection'], {'active': True, 'archived': False})
 
     def test_index_status_and_unavailable(self):
         with patch.object(server.indexer, 'request_index', return_value={'ok': True, 'stats': {'pending': 0}}) as client:

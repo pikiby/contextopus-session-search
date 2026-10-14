@@ -70,9 +70,13 @@ def _session_id(path):
 
 
 class Indexer:
-    def __init__(self, codex_home, store, embedder):
+    def __init__(self, codex_home, store, embedder, *, selection_path=None, block_tokens=512):
         self.home = Path(codex_home).resolve()
         self.store, self.embedder = store, embedder
+        from .settings import read_selection
+        self.selection_path = selection_path
+        self.selection = read_selection(selection_path)
+        self.block_tokens = block_tokens
         self.events, self.requests = queue.Queue(), queue.Queue()
         self.dirty = collections.OrderedDict()
         self.paths, self.titles, self.errors = {}, {}, {}
@@ -182,7 +186,10 @@ class Indexer:
             except OSError:
                 return 0
         for path in sorted(found, key=modified, reverse=True):
-            self.dirty[path] = None
+            sid, state = found[path]
+            self.store.relocate_session(sid, path, state)
+            if self.selection.get(state):
+                self.dirty[path] = None
         self.next_sweep = time.monotonic() + 60
 
     def process_file(self, filename):
@@ -203,6 +210,9 @@ class Indexer:
                 sid = _session_id(path)
                 state = 'archived' if 'archived_sessions' in path.relative_to(self.home).parts else 'active'
                 self.paths[filename] = (sid, state)
+            self.store.relocate_session(sid, filename, state)
+            if not self.selection.get(state):
+                return
             if self.activity and self.activity['operation'] == 'read':
                 self.activity['session_id'] = sid
                 self.status(refresh=False)
@@ -233,7 +243,7 @@ class Indexer:
                     offset = 0
                 else:
                     reader_state = checkpoint['reader_state']
-            result = read_increment(path, offset, reader_state, token_counter=self.embedder.count_tokens)
+            result = read_increment(path, offset, reader_state, max_tokens=self.block_tokens, token_counter=self.embedder.count_tokens)
             if not result['session'].get('id'):
                 return
             if result['session']['id'] != sid:
@@ -264,7 +274,7 @@ class Indexer:
         # activity publications reuse cached counts and remain immediate.
         now = time.monotonic()
         if self._stats_cache is None or force or (refresh and now - self._stats_refreshed_at >= 2):
-            self._stats_cache = self.store.stats()
+            self._stats_cache = self.store.stats(self.selection)
             from .search_history import stats as search_stats
             self._search_stats = search_stats(self.store.db)
             self._stats_refreshed_at = now
@@ -281,6 +291,7 @@ class Indexer:
                                          (self.activity and self.activity['operation'] in ('reconcile', 'read', 'embedding'))),
                       pid=self.pid, started_at=self.started_at, cpu_cores=self.cpu_cores, cpu_unit="physical",
                       activity=copy.deepcopy(self.activity), last_completed_at=self.last_completed_at)
+        result['session_selection'] = dict(self.selection)
         result['search_metrics'] = copy.deepcopy(self._search_stats)
         result['embedding_metrics'] = embedding_metrics
         result['database_bytes'] = self.store.database_bytes()
@@ -303,12 +314,24 @@ class Indexer:
         limit = request.get('limit', 10)
         if not isinstance(limit, int) or isinstance(limit, bool) or not 1 <= limit <= 200:
             raise ValueError('limit must be between 1 and 200')
+        state = request.get('state', 'all')
+        if state not in ('all', 'active', 'archived'):
+            raise ValueError('Invalid state filter')
+        if not any(enabled and state in ('all', name) for name, enabled in self.selection.items()):
+            return dict(matches=[], **self.status())
         with self._working('search'):
             vector = self.embedder.encode_query(request.get('query'))
-            matches = self.store.search(vector, limit=limit, state=request.get('state', 'all'))
+            matches = self.store.search(vector, limit=limit, state=request.get('state', 'all'), selection=self.selection)
         return dict(matches=matches, **self.status())
 
     def step(self):
+        from .settings import read_selection
+        selection = read_selection(self.selection_path)
+        if selection != self.selection:
+            self.selection = selection
+            self.dirty.clear()
+            self.next_sweep = 0
+            self.status(force=True)
         # Interactive requests go before background file/model work.
         try:
             request, response = self.requests.get_nowait()
@@ -343,7 +366,7 @@ class Indexer:
             self.status(force=worked)
             self._last_step_worked = worked or self._last_step_worked
             return True
-        job = self.store.claim_job()
+        job = self.store.claim_job(selection=self.selection)
         if job:
             try:
                 row = self.store.db.execute('SELECT session_id FROM chunks WHERE id=?', (job['chunk_id'],)).fetchone()
@@ -436,9 +459,10 @@ def run(args):
         if requested is None:
             requested = min(args.threads, len(core_groups(allowed=os.sched_getaffinity(0))))
         cores = configure_cores(requested)
-        embedder = Embedder(args.model_path, threads=cores)
-        store = Store(database, embedder.identity, embedder.dimensions)
-        actor = Indexer(args.codex_home, store, embedder)
+        embedder = Embedder(args.model_path, threads=cores, dimensions=args.dimensions, max_length=args.block_tokens)
+        store = Store(database, embedder.identity, embedder.dimensions,
+                      chunking=f'conversation-blocks-v1:{args.block_tokens}', rebuild=args.rebuild_index)
+        actor = Indexer(args.codex_home, store, embedder, block_tokens=args.block_tokens)
         class Events(FileSystemEventHandler):
             def on_any_event(self, event):
                 if not event.is_directory and event.event_type in ('created', 'modified', 'moved', 'deleted'):
@@ -480,6 +504,9 @@ def main():
     parser.add_argument('--database', default=str(Path.home() / '.local/share/codex-session-index/index.sqlite3'))
     parser.add_argument('--socket', default=str(default_socket()))
     parser.add_argument('--model-path')
+    parser.add_argument('--block-tokens', type=int, choices=(512,1024,2048), default=512)
+    parser.add_argument('--dimensions', type=int, choices=(256,512,1024), default=1024)
+    parser.add_argument('--rebuild-index', action='store_true', help='Rebuild incompatible derived index; preserve JSONL and search history')
     parser.add_argument('--cores', type=int, help='Physical cores; overrides saved TUI setting')
     parser.add_argument('--threads', type=int, default=2, help='Legacy fallback core count when no setting exists')
     run(parser.parse_args())

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "session-search"
-version = "0.7.3"
+version = "0.7.5"
 description = "Offline Codex session search for Contextopus"
 requires-python = ">=3.12"
 dependencies = []

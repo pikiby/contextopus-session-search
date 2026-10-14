@@ -1,23 +1,28 @@
 """Bounded local diagnostics and explicit user service actions for the TUI."""
 import json
 import os
+import sqlite3
 from pathlib import Path
 import subprocess
 import tomllib
 import time
 from . import indexer, server
 from .embedding import DEFAULT_MODEL_PATH, MODEL
+from .store import read_stats
+from .settings import read_selection, save_selection
 from .cpu import core_groups, read_cores, save_cores
 
 UNIT = 'codex-session-index.service'
 
 class Backend:
-    def __init__(self, codex_home=None, model_path=None, *, proc_root="/proc", clock=None, cpu_root="/sys/devices/system/cpu", cpu_config=None, systemd_root=None):
+    def __init__(self, codex_home=None, model_path=None, *, proc_root="/proc", clock=None, cpu_root="/sys/devices/system/cpu", cpu_config=None, systemd_root=None, selection_config=None, database=None):
         self.home = Path(codex_home or os.environ.get('CODEX_HOME', '~/.codex')).expanduser()
         self.model_path = Path(model_path or DEFAULT_MODEL_PATH)
         self.proc_root = Path(proc_root)
         self.cpu_root = cpu_root
         self.cpu_config = cpu_config
+        self.selection_config = selection_config
+        self.database = Path(database) if database is not None else Path.home() / ".local/share/codex-session-index/index.sqlite3"
         self.systemd_root = Path(systemd_root) if systemd_root else Path(os.environ.get("XDG_CONFIG_HOME", str(Path.home() / ".config"))) / "systemd/user"
         self.clock = clock or time.monotonic
         self._cpu_sample = None
@@ -53,6 +58,12 @@ class Backend:
             return {'ok': True}
         except (OSError, ValueError) as exc:
             return {'ok': False, 'output': str(exc)}
+
+    def set_selection(self, state, enabled):
+        try:
+            return {"ok": True, "session_selection": save_selection(state, enabled, self.selection_config)}
+        except (OSError, ValueError) as exc:
+            return {"ok": False, "output": str(exc)}
 
     def _resources(self, pid):
         result = dict(cpu_percent=None, memory_bytes=None, process_identity=None)
@@ -145,11 +156,12 @@ class Backend:
         missing = [name for name in files if not (self.model_path / name).is_file()]
         result = dict(version=package.stdout.splitlines()[-1] if package.returncode == 0 and package.stdout.startswith('install ok installed\n') else None,
                       model='available' if not missing else 'missing: '+', '.join(missing),
-                      service=props.get('ActiveState'), pid=props.get('MainPID'),
+                      service=props.get('ActiveState'), service_pid=props.get('MainPID'), pid=props.get('MainPID'),
+                      indexer_running=props.get('ActiveState') in {'active', 'activating'}, indexer_managed=props.get('ActiveState') in {'active', 'activating'},
                       autostart=props.get('UnitFileState'), mcp_configured=self._configured(),
                       sessions=None, chunks=None, vectors=None, pending=None, errors=None,
                       index_pending=None, operation='unknown', session_id=None, path=None, operation_started_at=None, index_available=False, last_progress=None, index_error=None)
-        result.update(self._resources(result['pid']))
+        result['session_selection'] = read_selection(self.selection_config)
         result.update(self._host_cpu())
         result['model_name'] = MODEL
         result['mcp_processes'] = self._mcp_processes()
@@ -168,6 +180,17 @@ class Backend:
             if not snapshot.get('ok'):
                 raise ValueError(snapshot.get('error', 'Indexer status failed'))
             result['index_available'] = True
+            result['indexer_running'] = True
+            socket_pid = snapshot.get('pid')
+            try:
+                valid_socket_pid = not isinstance(socket_pid, bool) and int(socket_pid) > 0
+            except (ValueError, TypeError, OverflowError):
+                valid_socket_pid = False
+            result['pid'] = socket_pid if valid_socket_pid else (
+                result['service_pid'] if result['service'] in {'active', 'activating'} else None)
+            result['indexer_managed'] = (result['service'] in {'active', 'activating'}
+                                         and str(result['pid']) == str(result['service_pid'])
+                                         and str(result['pid']) not in {'None', '0'})
             result.update({key: snapshot.get(key) for key in ('embedding_metrics', 'database_bytes', 'search_metrics')})
             result['cpu_cores'] = snapshot.get('cpu_cores') if snapshot.get('cpu_unit') == 'physical' else None
             result['index_pending'] = snapshot.get('index_pending')
@@ -187,6 +210,15 @@ class Backend:
             result['last_progress'] = snapshot.get('last_completed_at')
         except (OSError, ValueError, RuntimeError, TimeoutError) as exc:
             result['index_error'] = str(exc)
+            try:
+                persisted = read_stats(self.database, result['session_selection'])
+                stats = persisted['stats']
+                result.update({key: stats.get(key) for key in ('sessions', 'chunks', 'vectors', 'jobs')})
+                result.update({key: persisted.get(key) for key in ('database_bytes', 'search_metrics')})
+                result['pending'] = sum(stats.get('jobs', {}).get(key, 0) for key in ('pending', 'queued', 'retry', 'running'))
+            except (OSError, ValueError, RuntimeError, sqlite3.Error) as database_error:
+                result['database_error'] = str(database_error)
+        result.update(self._resources(result['pid']))
         return result
 
     def search(self, query, state='all'):
@@ -200,6 +232,10 @@ class Backend:
     def action(self, name):
         if name not in {'start', 'stop', 'restart', 'enable', 'disable'}:
             raise ValueError('Unknown service action')
+        if name in {'start', 'stop', 'restart'}:
+            status = self.status()
+            if status['indexer_running'] and not status['indexer_managed']:
+                return {'ok': False, 'output': 'Indexer runs in a terminal; stop it there with Ctrl+C.'}
         result = self._run(['systemctl', '--user', name, UNIT])
         return {'ok': result.returncode == 0, 'output': (result.stdout + result.stderr).strip()}
 

@@ -10,7 +10,7 @@ class BackendTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
-        self.backend = Backend(self.tmp.name, self.tmp.name)
+        self.backend = Backend(self.tmp.name, self.tmp.name, selection_config=Path(self.tmp.name)/'selection.json', database=Path(self.tmp.name)/'index.sqlite3')
 
     def run_result(self, args, **kwargs):
         if args[0] == 'systemctl':
@@ -36,11 +36,46 @@ class BackendTests(unittest.TestCase):
         self.assertEqual(result['index_error'], 'socket missing')
 
     def test_actions_are_explicit_and_bounded(self):
-        with patch.object(self.backend, '_run', return_value=subprocess.CompletedProcess([], 0, '', '')) as run:
+        with patch.object(self.backend, 'status', return_value={'indexer_running': True, 'indexer_managed': True}), patch.object(self.backend, '_run', return_value=subprocess.CompletedProcess([], 0, '', '')) as run:
             self.assertTrue(self.backend.action('restart')['ok'])
             run.assert_called_once_with(['systemctl', '--user', 'restart', UNIT])
         with self.assertRaises(ValueError):
             self.backend.action('delete')
+
+    def test_stopped_status_reads_persisted_counts_without_starting_service(self):
+        persisted = {'stats': {'sessions': 2, 'chunks': 5, 'vectors': 3, 'jobs': {'pending': 2}},
+                     'search_metrics': {'calls': 7}, 'database_bytes': 8192}
+        def stopped(args, **kwargs):
+            result = self.run_result(args, **kwargs)
+            if args[0] == 'systemctl':
+                result.stdout = 'ActiveState=inactive\nMainPID=0\nUnitFileState=enabled\n'
+            return result
+        with patch.object(self.backend, '_run', side_effect=stopped) as run, patch('session_search.tui_backend.indexer.request_index', side_effect=OSError('stopped')), patch('session_search.tui_backend.read_stats', return_value=persisted) as read:
+            result = self.backend.status()
+        read.assert_called_once_with(self.backend.database, {'active': True, 'archived': False})
+        self.assertEqual((result['sessions'], result['chunks'], result['vectors'], result['pending']), (2, 5, 3, 2))
+        self.assertEqual(result['search_metrics']['calls'], 7)
+        self.assertEqual(result['database_bytes'], 8192)
+        self.assertFalse(result['index_available'])
+        self.assertIsNone(result['cpu_percent'])
+        self.assertFalse(any('start' in call.args[0] for call in run.call_args_list))
+
+    def test_manual_indexer_cannot_be_started_stopped_or_restarted_through_service(self):
+        for action in ('start', 'stop', 'restart'):
+            with self.subTest(action=action), patch.object(self.backend, 'status', return_value={'indexer_running': True, 'indexer_managed': False}), patch.object(self.backend, '_run') as run:
+                result = self.backend.action(action)
+                self.assertFalse(result['ok'])
+                self.assertIn('Ctrl+C', result['output'])
+                run.assert_not_called()
+
+    def test_selection_saves_without_indexer_or_service(self):
+        with patch('session_search.tui_backend.indexer.request_index') as request, patch.object(self.backend, '_run') as run:
+            self.assertTrue(self.backend.set_selection('archived', True)['ok'])
+            self.assertTrue(self.backend.set_selection('active', False)['ok'])
+            request.assert_not_called()
+            run.assert_not_called()
+        from session_search.settings import read_selection
+        self.assertEqual(read_selection(self.backend.selection_config), {'active': False, 'archived': True})
 
     def test_mcp_check(self):
         messages = [{'id': 1, 'result': {'serverInfo': {'name': 'session-search'}}}, {'id': 2, 'result': {'tools': [{'name': x} for x in ('session_search', 'session_info', 'session_resume_command', 'index_status')]}}]
@@ -88,6 +123,52 @@ class ResourceTests(unittest.TestCase):
         self.now += 2
         self.write_proc(ticks=500)
         self.assertEqual(self.backend._resources('42')['cpu_percent'], 25.0)
+
+    def test_socket_pid_controls_resources_across_status_polls(self):
+        self.write_proc()
+        def inactive(args, **kwargs):
+            stdout = 'ActiveState=inactive\nMainPID=0\nUnitFileState=enabled\n' if args[0] == 'systemctl' else ''
+            return subprocess.CompletedProcess(args, 0, stdout, '')
+        snapshot = {'ok': True, 'pid': 42, 'index_pending': True,
+                    'stats': {'sessions': 2, 'chunks': 5, 'vectors': 3, 'jobs': {'pending': 2}},
+                    'errors': {}}
+        with patch.object(self.backend, '_run', side_effect=inactive), patch('session_search.tui_backend.indexer.request_index', return_value=snapshot):
+            first = self.backend.status()
+            self.now += 2
+            self.write_proc(ticks=500)
+            second = self.backend.status()
+        self.assertEqual(first['service'], 'inactive')
+        self.assertTrue(first['indexer_running'])
+        self.assertFalse(first['indexer_managed'])
+        self.assertEqual(first['service_pid'], '0')
+        self.assertEqual(str(first['pid']), '42')
+        self.assertEqual(first['process_identity'], '42:50')
+        self.assertIsNone(first['cpu_percent'])
+        self.assertEqual(first['memory_bytes'], 12288)
+        self.assertEqual(second['cpu_percent'], 25.0)
+        self.assertEqual(second['memory_bytes'], 12288)
+        self.assertTrue(second['index_available'])
+
+    def test_socket_pid_takes_priority_over_different_service_pid(self):
+        self.write_proc()
+        with patch.object(self.backend, '_run', return_value=subprocess.CompletedProcess([], 0, 'ActiveState=active\nMainPID=99\n', '')), patch('session_search.tui_backend.indexer.request_index', return_value={'ok': True, 'pid': 42}):
+            result = self.backend.status()
+        self.assertEqual(str(result['pid']), '42')
+        self.assertEqual(result['process_identity'], '42:50')
+        self.assertEqual(result['memory_bytes'], 12288)
+
+    def test_missing_socket_uses_active_service_pid_for_resources(self):
+        self.write_proc()
+        persisted = {'stats': {'sessions': 2, 'chunks': 5, 'vectors': 3, 'jobs': {}},
+                     'search_metrics': {'calls': 7}, 'database_bytes': 8192}
+        with patch.object(self.backend, '_run', return_value=subprocess.CompletedProcess([], 0, 'ActiveState=active\nMainPID=42\n', '')), patch('session_search.tui_backend.indexer.request_index', side_effect=OSError('socket missing')), patch('session_search.tui_backend.read_stats', return_value=persisted):
+            result = self.backend.status()
+        self.assertFalse(result['index_available'])
+        self.assertEqual(str(result['pid']), '42')
+        self.assertEqual(result['process_identity'], '42:50')
+        self.assertEqual(result['memory_bytes'], 12288)
+        self.assertEqual(result['chunks'], 5)
+        self.assertEqual(result['search_metrics']['calls'], 7)
 
     def test_pid_reuse_missing_and_zero_are_distinct(self):
         self.write_proc()

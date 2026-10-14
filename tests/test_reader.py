@@ -43,7 +43,7 @@ class ReaderTests(unittest.TestCase):
         self.assertEqual(len(second["chunks"]), 1)
         self.assertIn("Where is the pipeline?", second["chunks"][0]["text"])
         whole = read_increment(self.path)
-        self.assertEqual(first["chunks"] + second["chunks"], whole["chunks"])
+        self.assertEqual(list({c["id"]: c for c in first["chunks"] + second["chunks"]}.values()), whole["chunks"])
 
     def test_event_duplicates_tools_and_context_excluded(self):
         self.path.write_bytes(self.meta +
@@ -57,7 +57,8 @@ class ReaderTests(unittest.TestCase):
             message("assistant", "actual answer") +
             record("event_msg", type="agent_message", message="actual answer"))
         result = read_increment(self.path)
-        self.assertEqual(len(result["chunks"]), 2)
+        self.assertEqual(len(result["chunks"]), 1)
+        self.assertEqual(len(result["chunks"][0]["sources"]), 2)
         self.assertNotIn("secret", str(result))
         self.assertNotIn("base_instructions", result["session"])
 
@@ -90,14 +91,14 @@ class ReaderTests(unittest.TestCase):
     def test_bounded_batches_equal_full_scan(self):
         self.path.write_bytes(self.meta + message("user", "question") + message("assistant", "answer"))
         expected = read_increment(self.path)["chunks"]
-        chunks, offset, state = [], 0, None
+        chunks, offset, state = {}, 0, None
         for _ in range(10):
             batch = read_increment(self.path, offset, state, max_bytes=1)
-            chunks.extend(batch["chunks"])
+            chunks.update({c["id"]: c for c in batch["chunks"]})
             if batch["next_offset"] == offset:
                 break
             offset, state = batch["next_offset"], batch["state"]
-        self.assertEqual(chunks, expected)
+        self.assertEqual(list(chunks.values()), expected)
         self.assertEqual(offset, self.path.stat().st_size)
 
 

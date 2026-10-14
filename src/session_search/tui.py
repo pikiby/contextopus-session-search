@@ -104,7 +104,7 @@ class SessionSearchApp(App):
             yield Static('MCP             — · stdio', id='mcp', markup=False)
         with Vertical(classes='group', id='actions'):
             yield Static('ACTIONS', classes='heading', markup=False)
-            for name in ('toggle', 'core-choice', 'index-autostart', 'quit'):
+            for name in ('toggle', 'core-choice', 'index-autostart', 'active-sessions', 'archived-sessions', 'quit'):
                 yield Static('', id=name, markup=False)
         yield Static('↑↓ Select   ←→ Change   Enter Apply   Q Quit', id='hints', markup=False)
 
@@ -125,8 +125,8 @@ class SessionSearchApp(App):
         self.last_status = status
         self.render_commands()
         service = status.get('service')
-        active = service == 'active'
-        reason = self._action_error or status.get('service_error')
+        active = status.get('indexer_running', service == 'active')
+        reason = self._action_error or (status.get('service_error') if not status.get('index_available') else None)
         if not reason and status.get('errors'):
             reason = 'index errors: ' + str(status['errors'])
         if reason:
@@ -190,8 +190,9 @@ class SessionSearchApp(App):
 
     def render_commands(self):
         service = self.last_status.get('service')
-        label = 'Stop indexing' if service == 'active' else 'Start indexing'
-        if service not in {'active', 'inactive', 'failed'}:
+        running = self.last_status.get('indexer_running', service == 'active')
+        label = 'Stop indexing' if running else 'Start indexing'
+        if not running and service not in {'active', 'inactive', 'failed'}:
             label = 'Start/stop unavailable'
         if self._requested is not None:
             label = 'Please wait…'
@@ -203,24 +204,26 @@ class SessionSearchApp(App):
             core_label = 'Allocated cores Applying…'
         autostart = self.last_status.get('autostart')
         autostart = {'enabled':'Enabled','enabled-runtime':'Enabled (runtime)','disabled':'Disabled'}.get(autostart,'—')
-        commands = [('toggle',label),('core-choice',core_label),('index-autostart',f'Indexer autostart {autostart}'),('quit','Quit')]
+        selection = self.last_status.get('session_selection') or {'active': True, 'archived': False}
+        commands = [('toggle',label),('core-choice',core_label),('index-autostart',f'Indexer autostart {autostart}'),('active-sessions', 'Active sessions ' + ('Enabled' if selection['active'] else 'Disabled')),
+                    ('archived-sessions', 'Archived sessions ' + ('Enabled' if selection['archived'] else 'Disabled')), ('quit','Quit')]
         for index,(name,text) in enumerate(commands):
             selected = index == self._selected
             text = ('▶ ' if selected else '  ') + text
             self.query_one('#'+name, Static).update(Text(text, style=Style.parse('bold bright_cyan' if selected else 'default')))
 
     def action_select_previous(self):
-        self._selected = (self._selected - 1) % 4
+        self._selected = (self._selected - 1) % 6
         self.render_commands()
         self._scroll_selection()
 
     def action_select_next(self):
-        self._selected = (self._selected + 1) % 4
+        self._selected = (self._selected + 1) % 6
         self.render_commands()
         self._scroll_selection()
 
     def _scroll_selection(self):
-        names = ('toggle', 'core-choice', 'index-autostart', 'quit')
+        names = ('toggle', 'core-choice', 'index-autostart', 'active-sessions', 'archived-sessions', 'quit')
         self.query_one('#' + names[self._selected]).scroll_visible(animate=False)
 
     def action_activate(self):
@@ -235,6 +238,12 @@ class SessionSearchApp(App):
             autostart = self.last_status.get('autostart')
             if self._requested is None and autostart in {'enabled', 'disabled', 'enabled-runtime'}:
                 self._requested = 'disable' if autostart.startswith('enabled') else 'enable'
+                self.refresh_state()
+        elif self._selected in (3, 4):
+            if self._requested is None:
+                state = "active" if self._selected == 3 else "archived"
+                selection = self.last_status.get("session_selection") or {"active": True, "archived": False}
+                self._requested = ("selection", state, not selection[state])
                 self.refresh_state()
         else:
             self.exit()
@@ -255,11 +264,16 @@ class SessionSearchApp(App):
         if self._requested is not None:
             return
         service = self.last_status.get('service')
+        running = self.last_status.get('indexer_running', service == 'active')
+        if running and not self.last_status.get('indexer_managed', service == 'active'):
+            self._action_error = 'Stop terminal indexer with Ctrl+C'
+            self.render_status(self.last_status)
+            return
         if service not in {'active', 'inactive', 'failed'}:
             self._action_error = 'service state unavailable'
             self.render_status(self.last_status)
             return
-        self._requested = 'stop' if service == 'active' else 'start'
+        self._requested = 'stop' if running else 'start'
         self.render_commands()
         self.refresh_state()
 
@@ -272,7 +286,9 @@ class SessionSearchApp(App):
             while True:
                 if self._requested is not None:
                     action = self._requested
-                    if isinstance(action, tuple):
+                    if isinstance(action, tuple) and action[0] == "selection":
+                        result = await asyncio.to_thread(self.backend.set_selection, action[1], action[2])
+                    elif isinstance(action, tuple):
                         result = await asyncio.to_thread(self.backend.set_cores, action[1])
                     else:
                         result = await asyncio.to_thread(self.backend.action, action)

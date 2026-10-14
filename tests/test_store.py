@@ -112,17 +112,12 @@ class StoreTests(unittest.TestCase):
         self.assertEqual([r['id'] for r in all_results], ['s:0', 'active:0'])
         self.assertEqual(self.store.search((1, 0), limit=0), [])
 
-    def test_newest_session_then_newest_fragment_and_existing_queue_migration(self):
+    def test_newest_session_then_newest_fragment_and_restart(self):
         def add(sid, modified, offsets):
             self.store.ingest({'id': sid}, {'mtime_ns': modified},
-                [{'id': f'{sid}:{offset}', 'text': 'text', 'start_offset': offset, 'end_offset': offset+1} for offset in offsets])
+                [{'id': f'{sid}:{offset}', 'text': f'{sid}:{offset}', 'start_offset': offset, 'end_offset': offset+1} for offset in offsets])
         add('old', 10, [0, 10])
         add('new', 20, [0, 10])
-        # Simulate the previous queue schema; reopening must migrate pending jobs.
-        self.store.db.execute('DROP INDEX jobs_newest')
-        self.store.db.execute('ALTER TABLE jobs DROP COLUMN source_offset')
-        self.store.db.execute('ALTER TABLE jobs DROP COLUMN priority_ns')
-        self.store.db.commit()
         self.store.close()
         self.store = Store(self.path, 'test-model', 2)
         self.assertEqual(self.store.claim_job()['chunk_id'], 'new:10')

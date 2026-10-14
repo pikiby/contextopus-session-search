@@ -12,11 +12,12 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from . import indexer
+from .settings import read_selection
 
 _search_results = ContextVar("search_results", default=None)
 
 SERVER_NAME = "session-search"
-SERVER_VERSION = "0.7.3"
+SERVER_VERSION = "0.7.5"
 
 
 SESSION_FILE_RE = re.compile(
@@ -497,8 +498,11 @@ def _tool_session_search(arguments):
     pin_ids = pinned_ids(home)
     session_index = load_session_index(home)
 
+    selection = read_selection()
     matches = []
     for path in iter_session_paths(home, state):
+        if not selection[session_state_for_path(path, home)]:
+            continue
         matched_fields, snippets = search_session_file(
             path,
             home,
@@ -522,6 +526,7 @@ def _tool_session_search(arguments):
         "total": len(matches),
         "limit": limit,
         "sessions": matches[:limit],
+        "session_selection": selection,
     }
     return text_content(json.dumps(result, ensure_ascii=False, indent=2))
 
@@ -538,11 +543,14 @@ def tool_session_semantic_search(arguments):
         raise ValueError(f"Session indexer unavailable: {exc}. Check codex-session-index.service") from exc
     if not result.get("ok"):
         raise ValueError(result.get("error", "Session indexer failed"))
+    selection = read_selection()
+    selected_matches = [match for match in result.get('matches', [])
+                        if selection.get(match['state'], False) and state in ('all', match['state'])]
     if _search_results.get() is not None:
-        _search_results.set([dict(session_id=m['session']['id'], chunk_id=m['id'], distance=m['distance']) for m in result.get('matches', [])])
+        _search_results.set([dict(session_id=m['session']['id'], chunk_id=m['id'], distance=m['distance']) for m in selected_matches])
     names = load_session_index(home)
     sessions = {}
-    for match in result.get("matches", []):
+    for match in selected_matches:
         metadata = match["session"]
         sid = metadata["id"]
         if sid not in sessions:
@@ -561,10 +569,11 @@ def tool_session_semantic_search(arguments):
                 "text": match["text"], "chunk_id": match["id"],
                 "start_offset": match["start_offset"], "end_offset": match["end_offset"],
                 "distance": match["distance"],
-                "source": {key: match.get(key) for key in ("turn_id", "role", "part", "question_start_offset")},
+                "source": {**{key: match.get(key) for key in ("turn_id", "role", "part", "question_start_offset")},
+                           "sources": match.get("sources", [])},
             })
     payload = {"codex_home": str(home), "query": query, "mode": "semantic", "state": state,
-               "limit": limit, "total": len(sessions), "sessions": list(sessions.values()),
+               "session_selection": selection, "limit": limit, "total": len(sessions), "sessions": list(sessions.values()),
                "index": result.get("stats", {}), "index_pending": result.get("index_pending"),
                "note": "Distances rank candidates, not answer confidence. Read source context to verify task status. total counts returned sessions, not all relevant sessions."}
     return text_content(json.dumps(payload, ensure_ascii=False, indent=2))
