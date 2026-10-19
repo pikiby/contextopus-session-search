@@ -1,3 +1,4 @@
+# Non-English strings are intentional Unicode/UTF-8 search and JSONL fixtures.
 """Explicit isolated live smoke: run with production Python; never real history."""
 import argparse
 import json

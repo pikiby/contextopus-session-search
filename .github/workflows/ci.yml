@@ -1,0 +1,76 @@
+name: Session Search
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      core_ref:
+        description: Matching Core tag or commit
+        default: v1.5.0
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  linux:
+    runs-on: ubuntu-latest
+    env:
+      PYTHONDONTWRITEBYTECODE: '1'
+      PYTHONPATH: ${{ github.workspace }}/session-search/src
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: session-search
+      - uses: actions/checkout@v4
+        with:
+          repository: pikiby/contextopus-core
+          ref: ${{ inputs.core_ref || 'v1.5.0' }}
+          path: core
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install explicit test dependencies
+        run: python -m pip install "./core[test]" sqlite-vec==0.1.9
+      - name: Test module and standalone compatibility
+        working-directory: session-search
+        run: python -m pytest -q tests
+      - name: Build release assets
+        working-directory: session-search
+        run: |
+          python scripts/build-module.py --zip dist/session-search-0.8.0.zip
+          ./scripts/build-deb.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: session-search-0.8.0
+          path: session-search/dist/*
+          if-no-files-found: error
+
+  native-module:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    env:
+      PYTHONDONTWRITEBYTECODE: '1'
+      PYTHONPATH: ${{ github.workspace }}/session-search/src
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: session-search
+      - uses: actions/checkout@v4
+        with:
+          repository: pikiby/contextopus-core
+          ref: ${{ inputs.core_ref || 'v1.5.0' }}
+          path: core
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install "./core[test]"
+      - name: Test portable folder module and source-install preview
+        working-directory: session-search
+        run: python -m pytest -q tests/test_native_module.py tests/test_portability.py tests/test_installers.py

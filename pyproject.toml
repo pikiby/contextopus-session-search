@@ -1,13 +1,18 @@
 [build-system]
-requires = ["setuptools>=68"]
+requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "session-search"
-version = "0.7.5"
-description = "Offline Codex session search for Contextopus"
+version = "0.8.0"
+description = "Codex conversation search module for Contextopus with standalone compatibility"
+license = "Apache-2.0"
+license-files = ["LICENSE", "NOTICE"]
 requires-python = ">=3.12"
 dependencies = []
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[project.entry-points."contextopus.modules"]
+session_search = "session_search.core_module:register"

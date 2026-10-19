@@ -120,7 +120,9 @@ def read_increment(path, offset=0, state=None, *, max_chars=None,
             kind = item.get('type')
             if kind == 'session_meta':
                 if not state['session'].get('id'):
-                    state['session'] = {k:payload[k] for k in ('id','timestamp','cwd','parent_thread_id','forked_from_id') if k in payload}
+                    state['session'] = {k:payload[k] for k in ('id','timestamp','cwd','source','parent_thread_id','forked_from_id') if k in payload}
+                    from .session_types import classify
+                    state['session'].update(classify(state['session']))
                 continue
             if kind == 'turn_context' or (kind == 'event_msg' and payload.get('type') == 'task_started'):
                 if payload.get('turn_id'):

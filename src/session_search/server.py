@@ -17,7 +17,7 @@ from .settings import read_selection
 _search_results = ContextVar("search_results", default=None)
 
 SERVER_NAME = "session-search"
-SERVER_VERSION = "0.7.5"
+SERVER_VERSION = "0.8.0"
 
 
 SESSION_FILE_RE = re.compile(
@@ -486,7 +486,7 @@ def tool_session_search(arguments):
         _search_results.reset(token)
 
 
-def _tool_session_search(arguments):
+def _tool_session_search(arguments, *, selection=None):
     mode = enum_value(arguments, "mode", ["semantic", "literal"], "semantic")
     if mode == "semantic":
         return tool_session_semantic_search(arguments)
@@ -498,11 +498,15 @@ def _tool_session_search(arguments):
     pin_ids = pinned_ids(home)
     session_index = load_session_index(home)
 
-    selection = read_selection()
+    selection = read_selection() if selection is None else selection
     matches = []
     for path in iter_session_paths(home, state):
         if not selection[session_state_for_path(path, home)]:
             continue
+        if 'types' in selection:
+            from .session_types import read_provenance
+            if read_provenance(path)['session_type'] not in selection['types']:
+                continue
         matched_fields, snippets = search_session_file(
             path,
             home,
@@ -636,7 +640,76 @@ def tool_index_status(arguments):
 
 
 
+
+METADATA_FILTER_SCHEMA = {
+    "type": "object", "additionalProperties": False,
+    "properties": {
+        "state": {"type": "string", "enum": ["active", "archived", "all"]},
+        "cwd": {"type": "string", "description": "Exact working directory."},
+        "cwd_prefix": {"type": "string", "description": "Working directory subtree, path-component aware."},
+        "path": {"type": "string", "description": "Exact rollout file path."},
+        **{name: {"type": "string", "description": "Inclusive ISO 8601 bound; timezone defaults to UTC. Missing dates do not match."}
+           for name in ("created_after", "created_before", "last_message_after", "last_message_before")},
+        "min_bytes": {"type": "integer", "minimum": 0},
+        "max_bytes": {"type": "integer", "minimum": 0},
+        "session_types": {"type": "array", "items": {"enum": ["main", "subagent", "guardian", "exec", "unknown"]}},
+        "models": {"type": "array", "items": {"type": "string"}, "description": "Match any exact model name recorded in turn_context, not provider name."},
+        "ids": {"type": "array", "items": {"type": "string"}},
+    },
+}
+
+
+def tool_session_list(arguments):
+    from .session_management import inventory
+    result = inventory(codex_home(arguments), arguments.get('filters'))
+    offset = optional_int(arguments, 'offset', 0, 0, 1000000)
+    limit = optional_int(arguments, 'limit', 100, 1, 1000)
+    result['sessions'] = result['sessions'][offset:offset + limit]
+    result['offset'], result['limit'] = offset, limit
+    result['has_more'] = offset + len(result['sessions']) < result['count']
+    return text_content(json.dumps(result, ensure_ascii=False, indent=2))
+
+
+def tool_session_cleanup_preview(arguments):
+    from .session_management import preview
+    action = enum_value(arguments, 'action', ('archive', 'unarchive', 'delete'), None)
+    plan = preview(codex_home(arguments), action, arguments.get('filters'))
+    return text_content(json.dumps(plan, ensure_ascii=False, indent=2))
+
+
+def tool_session_cleanup_apply(arguments):
+    home = codex_home(arguments)
+    plan = arguments.get('plan')
+    confirmation = required(arguments, 'confirmation')
+    if not isinstance(plan, dict) or not isinstance(plan.get('items'), list):
+        raise ValueError('An exact plan from session_cleanup_preview is required')
+    if confirmation != plan.get('plan_id'):
+        raise ValueError('confirmation must equal the user-approved plan_id')
+    request = dict(op='session_cleanup_apply', codex_home=str(home), plan=plan, confirmation=confirmation,
+                   protected_ids=[os.environ['CODEX_THREAD_ID']] if os.environ.get('CODEX_THREAD_ID') else [])
+    try:
+        result = indexer.request_index(request, timeout=indexer.cleanup_timeout(plan))
+    except (OSError, TimeoutError, RuntimeError) as exc:
+        raise ValueError(f'Cleanup response unavailable: {exc}. Do not retry blindly; inspect selected sessions for partial changes.') from exc
+    return text_content(json.dumps(result, ensure_ascii=False, indent=2))
+
+
 TOOLS = {
+"session_list": {
+    "description": "List Codex sessions by metadata, independently of semantic search and indexing selection. Includes count and total bytes before pagination. Dates distinguish creation and last message; models are all recorded turn models. No mutations or model calls.",
+    "inputSchema": {"type": "object", "properties": {"codex_home": COMMON_SESSION_FILTER_SCHEMA["codex_home"], "filters": METADATA_FILTER_SCHEMA, "offset": {"type": "integer", "minimum": 0}, "limit": {"type": "integer", "minimum": 1, "maximum": 1000}}, "additionalProperties": False},
+    "handler": tool_session_list,
+},
+"session_cleanup_preview": {
+    "description": "Preview bulk archive, unarchive or delete. Returns exact IDs, paths, fingerprints, count, bytes and plan_id. Show full selection and blockers to user and obtain approval before apply. Never silently include descendants or infer approval from this call.",
+    "inputSchema": {"type": "object", "properties": {"codex_home": COMMON_SESSION_FILTER_SCHEMA["codex_home"], "action": {"type": "string", "enum": ["archive", "unarchive", "delete"]}, "filters": METADATA_FILTER_SCHEMA}, "required": ["action"], "additionalProperties": False},
+    "handler": tool_session_cleanup_preview,
+},
+"session_cleanup_apply": {
+    "description": "Execute only the exact preview approved by the user; confirmation must equal its plan_id. Uses native Codex and serialized search-index owner. Requires running indexer. Stops on failure and reports partial completion; inspect state before retry after interruption. Never fabricate user confirmation.",
+    "inputSchema": {"type": "object", "properties": {"codex_home": COMMON_SESSION_FILTER_SCHEMA["codex_home"], "plan": {"type": "object"}, "confirmation": {"type": "string"}}, "required": ["plan", "confirmation"], "additionalProperties": False},
+    "handler": tool_session_cleanup_apply,
+},
 "session_info": {
         "description": "Return metadata for one Codex session selected by id, renamed session name, file name or path.",
         "inputSchema": {

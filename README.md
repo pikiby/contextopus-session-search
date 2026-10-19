@@ -1,355 +1,83 @@
-# contextopus-session-search — Contextopus
+# Contextopus Session Search
 
-Приватный репозиторий: https://github.com/pikiby/contextopus-session-search
+![Contextopus](docs/media/contextopus-wide-1200.svg)
 
-Имя пакета и команды — `session-search`. Целевая система проверки — Linux Mint 22.3;
-совместимость с другими версиями Linux не подтверждена.
+Find a previous Codex decision, inspect the original messages and resume the
+right session. Session Search adds conversation search to
+[Contextopus Core](https://github.com/pikiby/contextopus-core).
 
-Самостоятельный поиск сессий Codex: stdio MCP и независимый фоновый индексатор.
-Источники — `~/.codex/sessions` и `~/.codex/archived_sessions`; исходная переписка
-и служебная база Codex не изменяются. Архивирование, удаление и объединение
-сессий не входят в инструмент. Семантическое совпадение не доказывает, что
-найденная задача ещё не завершена: прочитайте последующую переписку.
+- Search by meaning or exact text, with links and byte offsets to source JSONL.
+- Select active or archived conversations and filter by session type, project,
+  dates, model or size.
+- Reuse one Core embedding model and retrieval store across modules.
+- Preview archive, restore or delete actions before applying an exact plan.
 
-## Исходники
+Indexing leaves source transcripts unchanged. Session merging is not implemented.
 
-Модули находятся в `src/session_search`:
+## Install
 
-| Модуль | Назначение |
-| --- | --- |
-| `reader.py` | Чтение завершённых строк JSONL и сообщений с байтовыми координатами. |
-| `store.py` | SQLite, позиции чтения, фрагменты, постоянная очередь и sqlite-vec. |
-| `embedding.py` | Закреплённая offline CPU-модель и эмбеддинги. |
-| `indexer.py` | Наблюдение файлов, восстановление, обработка очереди и Unix-сокет. |
-| `server.py` | Четыре инструмента stdio MCP. |
-| `tui.py`, `tui_backend.py` | Терминальный интерфейс, проверка состояния и управление user-service. |
-| `charts.py` | Процентные полосы, временные графики CPU/RAM/скорости и оценка времени. |
-| `search_history.py` | История запросов и результатов, маскирование секретов, статистика за 24 часа. |
+Requires **Core 1.5 or newer (below 2.0)** and Python 3.12+. Install Core first
+using its [starter bundle](https://github.com/pikiby/contextopus-core/releases).
 
-## Инструменты MCP
-
-| Инструмент | Аргументы и результат |
-| --- | --- |
-| `session_search` | Обязательный `query`; `mode=semantic\|literal` (по умолчанию semantic), `state=active\|archived\|all` (all), `limit` 1–200 (20), `include_snippets` (false), `codex_home`. Возвращает совпадения и координаты исходных фрагментов. |
-| `session_info` | Обязательный `session` (ID, имя, имя файла или путь); `state`, `codex_home`, `include_messages` (true). Возвращает метаданные и краткие фрагменты пользовательских сообщений. |
-| `session_resume_command` | Обязательный `session`; `state`, `codex_home`. Возвращает команду открытия выбранной активной сессии. |
-| `index_status` | Необязательный `codex_home`. Возвращает состояние очереди и готовность индексатора. |
-
-`codex_home` по умолчанию берётся из `CODEX_HOME` или `~/.codex`.
-В semantic-поиске `limit` ограничивает уникальные блоки. Все разрешённые появления
-найденного блока возвращаются со ссылками на сессии; поэтому ссылок может быть больше
-`limit`. В literal `limit` ограничивает сессии. `state` пересекается с настройками
-Active sessions / Archived sessions; отключённую группу нельзя включить аргументом запроса.
-
-## Сборка и установка
-
-Требуется Python 3.12 или новее. Для сборки нужен уже установленный `dpkg-deb`:
+Download `session-search-0.8.0.zip` from
+[Session Search releases](https://github.com/pikiby/contextopus-session-search/releases)
+and extract it. Open a terminal in the extracted `session_search` folder:
 
 ```bash
-./scripts/build-deb.sh
-sudo dpkg -i dist/session-search_0.7.5_all.deb
+./install.sh --root "/path/to/existing/Contextopus"
 ```
 
-Пакет содержит только Python-код, launcher, документацию и user-unit.
-Установка не создаёт venv, не скачивает модель, не запускает сервис и не
-переключает действующий сервис. В пакете нет maintainer scripts.
-Код устанавливается в `/usr/lib/session-search/session_search`, launcher —
-`/usr/bin/session-search`, unit — `/usr/lib/systemd/user/codex-session-index.service`.
+On Windows PowerShell:
 
-## Python и offline-модель
-
-По умолчанию используется существующее окружение
-`~/.local/share/codex-session-index/venv/bin/python`. Альтернативный абсолютный
-путь задаётся `SESSION_SEARCH_PYTHON`. Индексатору нужны версии из
-`requirements-indexer.txt`; CPU PyTorch — `2.6.0+cpu`. MCP использует стандартную
-библиотеку; semantic-запросы обслуживает индексатор через Unix-сокет.
-
-**Установка зависимостей разрешается только отдельным явным решением.**
-Сборка, установка .deb и запуск launcher не выполняют pip. Для нового окружения
-сначала согласуйте создание venv, источники пакетов и установку зависимостей;
-этот документ не выполняет и не подразумевает такие действия.
-
-Переиспользуются уже имеющиеся локальные веса
-`Qwen/Qwen3-Embedding-0.6B`, ревизия
-`97b0c614be4d77ee51c0cef4e5f07c00f9eb65b3`, выходная размерность 1024:
-
-```text
-~/.cache/huggingface/hub/models--Qwen--Qwen3-Embedding-0.6B/snapshots/97b0c614be4d77ee51c0cef4e5f07c00f9eb65b3
+```powershell
+.\install.ps1 -Root "C:\path\Contextopus"
 ```
 
-Индексатор запускается offline без remote model code. Параметр `--model-path` принимает только этот закреплённый snapshot
-в стандартном Hugging Face cache; произвольный каталог весов не принимается.
-Весов в пакете нет; при их отсутствии требуется отдельное решение о получении.
-
-## Сервис и переход с прежнего MCP-work
-
-Путь базы — `~/.local/share/codex-session-index/index.sqlite3`. Переход на блоки
-и новую размерность требует явного пересоздания производного индекса (см. ниже). Сокет —
-`$XDG_RUNTIME_DIR/codex-session-index.sock`, при отсутствии переменной —
-`~/.cache/codex-session-index/index.sock`. MCP учитывает
-`CODEX_SESSION_INDEX_SOCKET`. Не запускайте два индексатора для одной базы.
-
-Перед переходом установите пакет и проверьте внешнее окружение и веса.
-Действующий пользовательский unit в `~/.config/systemd/user` имеет приоритет над
-пакетным. Следующие команды являются явным ручным переходом, а не частью
-установки. Остановите прежний сервис и сохраните прежний unit вне каталога
-systemd; для отката восстановите его и выполните daemon-reload:
+If Core already has a bound data root, omit `--root` / `-Root`. Add `--plan` /
+`-Plan` to inspect without installing. The installers delegate to Core's common
+module lifecycle. A direct folder or ZIP install is equivalent:
 
 ```bash
-systemctl --user stop codex-session-index.service
-mkdir -p ~/.local/share/codex-session-index/unit-backups
-cp -a ~/.config/systemd/user/codex-session-index.service ~/.local/share/codex-session-index/unit-backups/codex-session-index.service.before-toolkit
-cp /usr/lib/systemd/user/codex-session-index.service ~/.config/systemd/user/codex-session-index.service
-systemctl --user daemon-reload
-systemctl --user enable --now codex-session-index.service
+contextopus --root "/path/to/existing/Contextopus" modules install session_search --source "/path/to/session-search-0.8.0.zip"
 ```
 
-Для новой установки без прежнего пользовательского unit достаточно
-`systemctl --user daemon-reload` и
-`systemctl --user enable --now codex-session-index.service`.
-Существующие drop-in настройки проверьте через `systemctl --user cat`.
-Для другого Python задайте `Environment=SESSION_SEARCH_PYTHON=/absolute/path`
-в user drop-in через `systemctl --user edit codex-session-index.service`.
+An existing module is updated through `modules update`; source installation
+refuses to overwrite it. [Configuration, updates and operation reference](docs/module.md).
 
-По умолчанию сервис использует два физических ядра (настройка Cores в TUI), `MemoryHigh=4G`,
-`MemoryMax=5G`, `MemorySwapMax=0`; права новых данных — `UMask=0077`.
-Автозапуск до входа пользователя не настраивается.
+## Start searching
 
-## Подключение MCP
+Connect your agent to Core's shared MCP. Configure `session_search.configure`
+with an existing `codex_home`, then call `session_search.start`. Check
+`session_search.status` for progress and use `session_search.search` with a
+query and `mode="semantic"` or `"literal"`.
 
-Пример отдельной записи клиента Codex:
+Main active sessions are selected by default. Archive and subagent selection is
+explicit. The terminal interface opens from Core's module menu and shows
+indexing progress, embedding speed and recent search metrics. Read later messages
+before treating a found task as unfinished.
 
-```toml
-[mcp_servers.session_search]
-command = "/usr/bin/session-search"
-args = ["mcp"]
-```
+[Contextopus Workspace](https://github.com/pikiby/contextopus-workspace) is an
+optional companion for structured project knowledge; Session Search also works
+without it.
 
-При необходимости добавьте `[mcp_servers.session_search.env]` с
-`SESSION_SEARCH_PYTHON` и `CODEX_SESSION_INDEX_SOCKET`. После изменения
-подключения перезапустите MCP-процесс клиента. CLI также допускает
-`python -m session_search.server` и `python -m session_search.indexer` при
-`PYTHONPATH=/usr/lib/session-search` либо `PYTHONPATH=src` из исходников.
-
-## Проверка
+## Build and develop
 
 ```bash
-session-search status
-systemctl --user status codex-session-index.service
-systemctl --user cat codex-session-index.service
-systemctl --user show codex-session-index.service -p CPUQuotaPerSecUSec -p MemoryHigh -p MemoryMax -p MemorySwapMax
-journalctl --user -u codex-session-index.service -n 30 --no-pager
-PYTHONPATH=src ~/.local/share/codex-session-index/venv/bin/python -m unittest discover -s tests
+python3 scripts/build-module.py /tmp/session-search-build/session_search
+python3 scripts/build-module.py --zip /tmp/session-search-build/session-search-0.8.0.zip
 ```
 
-Запуск сервиса не означает полной индексации. `index_pending=true` сообщает
-о незавершённой обработке; остановленный индексатор возвращает ошибку.
-Проверка сборки и распаковки .deb не является проверкой установки на Linux.
+Builds contain the module, SQL migrations, installers, guide and license files;
+no transcripts, indexes or model weights. Outputs are never overwritten.
+[Development and tests](docs/development.md) ·
+[Bounded standalone measurements](docs/block-comparison.md).
 
-## Обновление и удаление
+The independent stdio MCP/indexer and `.deb` remain a secondary compatibility
+path with their own offline model. [Standalone guide](docs/standalone.md).
+The module uses Core's model and lifecycle. Native platform checks are defined
+in CI; local verification uses Linux fixtures, and the standalone target is
+Linux Mint 22.3.
 
-Обновление: установите новый .deb, затем явно перезапустите сервис и MCP-клиент.
-Установка пакета сама не меняет уже работающий процесс. Если пользовательский
-unit скопирован вручную, сравните его с новой пакетной версией перед заменой.
+## License
 
-Удаление: сначала явно остановите и отключите user-service, затем
-`sudo dpkg -r session-search`. Пользовательский unit, внешнее venv, offline-веса,
-SQLite и исходные сессии сохраняются; удалять их следует только отдельным
-решением. База содержит переписку: не публикуйте её, веса, venv и секреты в Git.
-
-## Терминальный интерфейс
-
-`session-search tui` показывает компактные английские строки прямо в терминале,
-без рамок и полноэкранного режима. Используется установленный Textual 8.2.8.
-Фон — стандартный фон терминала; цвета сохранены через ANSI-тему.
-Содержимое ограничено 79 символами: блоки не растягиваются по широкому окну.
-При сужении целые блоки CPU/RAM/Embeddings переходят с трёх колонок на две
-и одну; две колонки статистики также становятся одной. Внутреннее выравнивание
-сохраняется. Отступы слева и справа — один символ, кроме меню ACTIONS.
-
-1. Заголовок SESSION SEARCH; справа статус Indexing running/idle/stopped/error.
-2. Три колонки CPU / RAM / Embeddings. CPU и RAM имеют цветные процентные
-   полосы; под ними — выделенные/все физические ядра и RSS в GiB. Embeddings
-   показывает число завершений за минуту и среднее время одного эмбеддинга.
-   Под каждым блоком свой график за последние 120 секунд с подписями осей
-   и автоматической шкалой величины. CPU — голубой, RAM — зелёный,
-   скорость — жёлтая. До первого интервала CPU — «—». Пропуски не заполняются
-   измерениями; нулевые значения отображаются. История только в памяти TUI.
-3. INDEXING: зелёная полоса выполненного процента; Indexed — готовые / всего;
-   Remaining — количество без эмбеддинга, включая ошибки. Справа Sessions,
-   Database size в GiB (SQLite+WAL+SHM, 2³⁰ байт) и название модели.
-   Time remaining — приблизительное время для обнаруженного остатка, рассчитанное
-   по завершениям за полное окно 60 секунд. Пока окна нет или скорость нулевая —
-   Calculating…; при остановке — N/A. Изменение очереди и скорости меняет прогноз.
-   Пустая база показывает 0%; неизвестные показатели — «—».
-4. SEARCH · LAST 24 HOURS: Requests/Errors, Empty results/Average time, MCP.
-5. ACTIONS: Stop/start indexing, Allocated cores, Indexer autostart,
-   Active sessions, Archived sessions, Quit.
-   Ниже постоянная подсказка: ↑↓ Select · ←→ Change · Enter Apply · Q Quit.
-
-Реализован текстовый образец, предоставленный пользователем в чате.
-Все дальнейшие изменения текстового интерфейса сначала показываются полным
-примером в чате и реализуются после согласования. Пустая строка разделяет группы;
-показатели стоят в выровненных колонках, без рамок и полноэкранного режима.
-
-Стрелки ↑/↓ выбирают Start/stop indexing, Cores, Indexer autostart, Active sessions, Archived sessions или Quit; Enter выполняет
-выбранную команду. `▶` слева и цвет отмечают выбранный пункт; у Allocated cores — `◀ N ▶`. Также доступны `s` для запуска/остановки
-индексатора и `q` для выхода. Выход закрывает только интерфейс.
-MCP-команды проекта сохранены.
-Неизвестные счётчики показываются как «—»; ноль — как 0. Если индексатор выключен,
-счётчики сессий, уникальных блоков, готовых эмбеддингов, очереди, размер базы
-и история поиска читаются из SQLite через read-only подключение. Модель не загружается,
-задания не изменяются. Отсутствующая база не создаётся; при ошибке счётчики неизвестны.
-История нагрузки хранится в памяти TUI; первый замер CPU неизвестен.
-
-Статус и PID работающего индексатора TUI получает через локальный сокет,
-включая ручной запуск `session-search index --rebuild-index`. CPU и RAM
-измеряются у этого процесса, скорость обработки приходит из его статистики.
-Состояние systemd учитывается отдельно для службы и автозагрузки; пока сокет
-недоступен, PID активной службы используется для измерения нагрузки.
-Ручной процесс останавливается в запустившем его терминале: TUI сообщает
-об этом при выборе Stop indexing и не запускает вторую копию индексатора.
-
-После установки нового .deb новый TUI открывается командой `session-search tui`.
-Пакет сам не перезапускает сервис. Для применения обновлённого индексатора нужен
-явный `systemctl --user restart codex-session-index.service`.
-
-## Приоритет индексации и CPU
-
-Очередь эмбеддингов выбирает сначала фрагменты недавно изменённых сессий
-(по mtime исходного JSONL), внутри сессии — последние фрагменты по смещению
-в файле. Новые задания опережают старые, если их сессия свежее. Уже выполняемая
-операция заканчивается без прерывания. При обновлении автоматически меняется
-порядок существующих заданий; готовые эмбеддинги сохраняются. Приоритет действует
-среди уже прочитанных фрагментов: JSONL читается последовательно порциями.
-
-`session-search index --cores 4` выбирает четыре физических ядра.
-Топология читается из Linux sysfs по physical_package_id/core_id. На каждом
-выбранном ядре используется один логический CPU и один вычислительный поток модели.
-SMT-потоки одного ядра не считаются отдельными ядрами.
-
-В TUI выберите Cores стрелками ↑/↓, измените число через ←/→ и нажмите Enter.
-Настройка атомарно сохраняется в `~/.config/session-search/cpu.json`
-(учитывается XDG_CONFIG_HOME). При применении создаётся user drop-in `90-session-search-cpu.conf` с пустым `CPUQuota=`,
-чтобы сбросить старую квоту 200%; выполняется daemon-reload.
-`CPUQuota=infinity` из 0.7.0 было некорректным и игнорировалось systemd.
-После установки 0.7.1 примените Cores через Enter, чтобы исправить существующий
-пользовательский drop-in; установка пакета сама не меняет настройки или процесс.
-Работавший индексатор перезапускается;
-остановленный остаётся остановленным. Выход без Enter не применяет выбор.
-При ошибке перезапуска TUI сообщает её; сохранённое значение применяется при следующем запуске.
-Явный --cores имеет приоритет над файлом; старый --threads — только запасное значение,
-если сохранённой настройки нет. Прежний indexer.env версии 0.5.0 больше не используется.
-
-`Allocated cores: 4 / 16 physical` показывает выделенные/все физические ядра.
-Это настройка доступных индексатору ядер, не число одновременно занятых ядер.
-CPU вычисляется по сумме utime+stime процесса из /proc/PID/stat:
-`100 × ΔCPU_seconds / (Δwall_seconds × число онлайн логических CPU машины)`.
-100% — весь процессор; нагрузка других программ в числитель не входит.
-Число онлайн CPU читается из /proc/stat, а не из affinity индексатора.
-После смены PID/времени старта процесса или набора онлайн CPU первый интервал
-не используется. Физические ядра в настройке не заменяются логическими CPU.
-Если старый индексатор не сообщает физические ядра, выделенное число — N/A.
-
-
-## Метрики и история поиска
-
-TUI показывает модель, размер SQLite вместе с WAL/SHM в GiB (2³⁰ байт), среднее
-время успешного создания и записи эмбеддинга и число завершений за последние
-60 секунд. До первого завершения среднее — N/A. Счётчики эмбеддингов за окно
-начинаются заново после запуска индексатора; исторические значения не выдумываются.
-
-Для поиска среднее время успешных запросов, число вызовов, ошибок и пустых
-результатов считаются за последние 24 часа. Время измеряет MCP от начала обработки
-поискового вызова до готового ответа, включая ожидание индексатора. Финальная
-запись журнала и доставка ответа клиенту в этот интервал не входят.
-
-Таблица search_requests хранит ID, начало/конец, длительность, инструмент,
-параметры, состояние started/completed/error, число возвращённых сессий и ошибку.
-search_results связана по request_id, хранит порядок, ID сессии/фрагмента и
-расстояние. Для буквального поиска chunk_id и distance отсутствуют.
-История не имеет внешнего ключа к сессии: удаление сессии не переписывает факты
-прошлого поиска. Внешний ключ результатов к запросу включён.
-
-Пишет только индексатор. MCP передаёт начало и окончание через существующий
-Unix-сокет. Незавершённый started означает неизвестный исход. При недоступном
-индексаторе запись истории не гарантирована; MCP сообщает об этом в stderr и
-не заменяет поисковый ответ ошибкой журналирования. Распознаваемые ключи, пароли
-и токены маскируются; произвольный секрет без узнаваемого формата гарантированно
-распознать нельзя. История никогда не попадает в очередь эмбеддингов.
-
-Indexer autostart вызывает systemctl --user enable/disable без немедленного
-старта/остановки. Start/stop indexing меняет только состояние запущенного процесса.
-
-
-## MCP в TUI
-
-MCP остаётся stdio: каждая поддерживающая его агентская оболочка запускает свой
-лёгкий процесс командой `session-search mcp`. Все обращаются к одному индексатору;
-модель не загружается повторно в MCP. Отдельной службы MCP, её автозагрузки
-и кнопки запуска в TUI нет.
-
-Строка MCP показывает количество процессов session_search.server текущего
-пользователя, обнаруженных через /proc, либо NOT RUNNING. Это состояние процессов,
-а не проверка подключения или ответа инструментов. При невозможности проверки — N/A.
-Наличие записи в настройках Codex само по себе не означает работающий MCP.
-CPU, RAM и Embeddings расположены в трёх колонках с графиками на одной высоте. При малой высоте терминала выбор команд
-стрелками прокручивает интерфейс к выбранному пункту.
-
-
-## Блоки, повторяющийся текст и выбор сессий (0.7.4)
-
-Последовательные сообщения пользователя и ассистента объединяются в блоки до
-512 токенов. Граница сообщения больше не создаёт отдельный эмбеддинг. Завершённые
-блоки неизменны; последний неполный блок уже индексируется и заменяется при
-дописывании. Reader сохраняет его в checkpoint, поэтому после рестарта продолжает
-тот же блок. В `sources` сохраняются роли, turn_id, байтовые координаты исходных
-JSONL-записей и диапазоны символов внутри очищенного текста сообщений. MCP
-возвращает их в `snippets[].source.sources` при `include_snippets=true`.
-
-`blocks` хранит уникальный текст и SHA-256; `chunks` — появления блока в сессиях
-с внешним ключом `block_pk`; `jobs` содержит максимум одно задание на блок;
-`vectors.rowid` совпадает с `blocks.pk`. Повторное появление использует готовый
-вектор. Изменение хвоста одной сессии не меняет другую. Удаление последней ссылки
-удаляет блок, вектор и задание. Идентичность профиля модели и нарезки хранится
-в metadata; смешивание несовместимых векторов запрещено.
-
-По умолчанию сохраняются все 1024 координаты Qwen с L2-нормализацией; запрос
-обрабатывается так же. Уменьшенные профили 256/512 остаются явной настройкой:
-берутся первые координаты и выполняется повторная нормализация. Это экономит
-хранение, но не вычисление моделью полного представления.
-Настройки CLI: `--dimensions 256|512|1024`, `--block-tokens 512|1024|2048`.
-Результаты ограниченного сравнения и его воспроизведение —
-[Сравнение блоков и размерностей](docs/block-comparison.md). По решению пользователя
-выбраны блоки 512 токенов и 1024 измерения: 12/12 попаданий против 11/12
-при 512 измерениях на этой выборке. Оптимальность для всей истории не доказана.
-
-Active sessions и Archived sessions независимо включают/исключают соответствующую
-группу из поиска и обработки. По умолчанию включены обычные, выключены архивные.
-Enter переключает выбранный пункт; настройки атомарно сохраняются в
-`~/.config/session-search/sessions.json` (учитывается XDG_CONFIG_HOME).
-Обе группы можно выключить. Готовые векторы и очередь сохраняются; при включении
-обработка продолжается. Перенос между каталогами обновляет состояние и ссылки
-даже для выключенной группы. Уже начатый вызов модели завершается.
-Счётчики прогресса относятся к выбранным группам и уникальным блокам; общие блоки
-не учитываются дважды. Размер файла базы отражает всю базу, включая выключенные группы.
-
-### Переход со старой схемы
-
-Старая схема с одним вектором на фрагмент несовместима с блоками. Обычный запуск
-откажется её переписывать и попросит явный rebuild. После установки пакета сначала
-остановите сервис, затем выполните одноразовый пересчёт с новыми настройками:
-
-```bash
-systemctl --user stop codex-session-index.service
-session-search index --rebuild-index
-```
-
-Команда остаётся работающим индексатором; после начала обработки можно остановить
-её через Ctrl+C и запустить `systemctl --user start codex-session-index.service`.
-При несовпадении профиля флаг пересоздаёт только blocks/chunks/jobs/vectors и
-сбрасывает позиции чтения. JSONL, инвентарь сессий и история запросов сохраняются.
-При совпадении профиля флаг ничего не сбрасывает. Отключённые архивы не читаются
-до включения. Поиск становится доступен по мере создания новых эмбеддингов.
-Для нестандартных параметров используйте те же аргументы в ExecStart сервиса.
-Установка .deb сама не мигрирует базу и не перезапускает службы.
+Apache-2.0. See [LICENSE](LICENSE) and retained attribution in [NOTICE](NOTICE).

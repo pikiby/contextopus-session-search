@@ -1,9 +1,10 @@
 Package: session-search
-Version: 0.7.5
+Version: 0.8.0
 Section: utils
 Priority: optional
 Architecture: all
 Maintainer: session-search maintainers
 Depends: python3 (>= 3.12)
-Description: Offline Codex session search for Contextopus
- Independent indexer and stdio MCP using an existing external Python environment.
+Description: Standalone compatibility package for Contextopus Session Search
+ Independent Codex indexer and stdio MCP using an existing Python environment.
+ The primary Contextopus folder module is built separately.

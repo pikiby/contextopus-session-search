@@ -22,13 +22,17 @@ class PackagingTests(unittest.TestCase):
             package = extracted / 'usr/lib/session-search/session_search'
             self.assertEqual({p.name for p in package.iterdir()},
                              {name + '.py' for name in
-                              ('__init__', 'reader', 'store', 'embedding', 'indexer', 'server', 'tui', 'tui_backend', 'cpu', 'charts', 'search_history', 'settings')})
+                              ('__init__', 'reader', 'store', 'embedding', 'indexer', 'server', 'tui', 'tui_backend', 'cpu', 'charts', 'search_history', 'settings', 'session_management', 'session_types', 'core_module', 'migration', 'tui_core_backend')})
             self.assertTrue((extracted / 'usr/bin/session-search').stat().st_mode & 0o111)
             unit = (extracted / 'usr/lib/systemd/user/codex-session-index.service').read_text()
             for setting in ('CPUQuota=\n', 'MemoryHigh=4G', 'MemoryMax=5G',
                             'MemorySwapMax=0'):
                 self.assertIn(setting, unit)
             self.assertFalse((extracted / 'home').exists())
+            docs = extracted / 'usr/share/doc/session-search/docs'
+            self.assertTrue((docs / 'media/contextopus-wide-1200.svg').is_file())
+            for guide in ('module.md', 'standalone.md', 'development.md', 'block-comparison.md'):
+                self.assertTrue((docs / guide).is_file(), guide)
 
     def test_launcher_dispatches_without_automatic_dependency_installation(self):
         with tempfile.TemporaryDirectory() as directory:

@@ -1,0 +1,13 @@
+CREATE TABLE "{{module}}::metadata"(key TEXT PRIMARY KEY,value TEXT NOT NULL);
+CREATE TABLE "{{module}}::sessions"(id TEXT PRIMARY KEY,metadata TEXT NOT NULL,state TEXT NOT NULL,checkpoint TEXT NOT NULL);
+CREATE TABLE "{{module}}::blocks"(pk INTEGER PRIMARY KEY AUTOINCREMENT,content_hash TEXT UNIQUE NOT NULL,text TEXT NOT NULL);
+CREATE TABLE "{{module}}::chunks"(pk INTEGER PRIMARY KEY,id TEXT UNIQUE NOT NULL,session_id TEXT NOT NULL REFERENCES "{{module}}::sessions"(id) ON DELETE CASCADE,block_pk INTEGER NOT NULL REFERENCES "{{module}}::blocks"(pk),start_offset INTEGER NOT NULL,end_offset INTEGER NOT NULL,metadata TEXT NOT NULL DEFAULT '{}');
+CREATE INDEX "{{module}}::chunks_block" ON "{{module}}::chunks"(block_pk);
+CREATE INDEX "{{module}}::chunks_session" ON "{{module}}::chunks"(session_id);
+CREATE TABLE "{{module}}::jobs"(id INTEGER PRIMARY KEY AUTOINCREMENT,block_pk INTEGER UNIQUE NOT NULL REFERENCES "{{module}}::blocks"(pk) ON DELETE CASCADE,content_hash TEXT NOT NULL,state TEXT NOT NULL,attempts INTEGER NOT NULL DEFAULT 0,next_attempt REAL NOT NULL DEFAULT 0,error TEXT,priority_ns INTEGER NOT NULL DEFAULT 0,source_offset INTEGER NOT NULL DEFAULT 0);
+CREATE INDEX "{{module}}::jobs_newest" ON "{{module}}::jobs"(priority_ns DESC,source_offset DESC,id DESC);
+CREATE TABLE "{{module}}::vectors"(rowid INTEGER PRIMARY KEY REFERENCES "{{module}}::blocks"(pk) ON DELETE CASCADE);
+CREATE TABLE "{{module}}::vector_deletions"(block_pk INTEGER PRIMARY KEY);
+CREATE TABLE "{{module}}::search_requests"(id TEXT PRIMARY KEY,started_at REAL NOT NULL,finished_at REAL,duration_seconds REAL,tool TEXT NOT NULL,parameters TEXT NOT NULL,state TEXT NOT NULL CHECK(state IN ('started','completed','error')),result_count INTEGER,error TEXT);
+CREATE INDEX "{{module}}::search_requests_time" ON "{{module}}::search_requests"(started_at);
+CREATE TABLE "{{module}}::search_results"(request_id TEXT NOT NULL REFERENCES "{{module}}::search_requests"(id) ON DELETE CASCADE,rank INTEGER NOT NULL,session_id TEXT,chunk_id TEXT,distance REAL,PRIMARY KEY(request_id,rank));

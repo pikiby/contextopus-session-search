@@ -1,3 +1,4 @@
+# Non-English strings are intentional Unicode/UTF-8 search and JSONL fixtures.
 import unittest
 from unittest.mock import patch
 from types import SimpleNamespace

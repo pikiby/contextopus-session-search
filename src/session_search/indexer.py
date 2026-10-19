@@ -4,7 +4,6 @@ import collections
 import copy
 from contextlib import contextmanager
 from datetime import datetime, timezone
-import fcntl
 import hashlib
 import json
 import logging
@@ -24,13 +23,24 @@ def default_socket():
     return Path(runtime) / 'codex-session-index.sock' if runtime else Path.home() / '.cache/codex-session-index/index.sock'
 
 
+MAX_RPC_BYTES = 16 * 1024 * 1024
+
+
+def cleanup_timeout(plan):
+    items = plan.get("items", []) if isinstance(plan, dict) else []
+    return max(180, 120 * len(items) + 120)
+
+
 def request_index(payload, socket_path=None, timeout=60):
     with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
         client.settimeout(timeout)
         client.connect(str(socket_path or os.environ.get('CODEX_SESSION_INDEX_SOCKET') or default_socket()))
-        client.sendall(json.dumps(payload).encode() + b'\n')
+        encoded = json.dumps(payload).encode() + b'\n'
+        if len(encoded) > MAX_RPC_BYTES:
+            raise ValueError('Request too large; split the selection into smaller previews')
+        client.sendall(encoded)
         with client.makefile('rb') as stream:
-            raw = stream.readline(4 * 1024 * 1024)
+            raw = stream.readline(MAX_RPC_BYTES + 1)
         if not raw.endswith(b'\n'):
             raise RuntimeError('Incomplete indexer response')
         response = json.loads(raw)
@@ -69,13 +79,30 @@ def _session_id(path):
     raise ValueError('session_meta.id missing')
 
 
+def cpu_topology():
+    """Observe physical cores when supported, otherwise label logical/unknown counts.
+
+    This is status metadata only. The module never changes process affinity.
+    """
+    affinity = getattr(os, 'sched_getaffinity', None)
+    if affinity is not None:
+        try:
+            return len(core_groups(allowed=affinity(0))), 'physical'
+        except (OSError, ValueError):
+            pass
+    count = os.cpu_count()
+    return (count, 'logical') if count is not None else (None, 'unknown')
+
+
 class Indexer:
-    def __init__(self, codex_home, store, embedder, *, selection_path=None, block_tokens=512):
+    def __init__(self, codex_home, store, embedder, *, selection_path=None, block_tokens=512, selection_reader=None, read_bytes=1024 * 1024):
         self.home = Path(codex_home).resolve()
         self.store, self.embedder = store, embedder
         from .settings import read_selection
         self.selection_path = selection_path
-        self.selection = read_selection(selection_path)
+        self.selection_reader = selection_reader or (lambda: read_selection(self.selection_path))
+        self.selection = self.selection_reader()
+        self.read_bytes = read_bytes
         self.block_tokens = block_tokens
         self.events, self.requests = queue.Queue(), queue.Queue()
         self.dirty = collections.OrderedDict()
@@ -83,7 +110,7 @@ class Indexer:
         self.stopping = threading.Event()
         self.next_sweep = 0
         self.pid = os.getpid()
-        self.cpu_cores = len(core_groups(allowed=os.sched_getaffinity(0)))
+        self.cpu_cores, self.cpu_unit = cpu_topology()
         self.started_at = self._timestamp()
         self.embedding_samples = collections.deque()
         self.metrics_started = time.monotonic()
@@ -224,7 +251,7 @@ class Indexer:
                 if (stat.st_ino == checkpoint['inode'] and stat.st_size == checkpoint['size'] and
                         stat.st_mtime_ns == checkpoint['mtime_ns'] and
                         checkpoint.get('path') == filename and checkpoint.get('title') == self.titles.get(sid, '') and
-                        checkpoint.get('state') == state and checkpoint.get('exhausted')):
+                        checkpoint.get('state') == state and checkpoint.get('provenance_version') == 1 and checkpoint.get('exhausted')):
                     return
                 actual_sid = _session_id(path)
                 if actual_sid != sid:
@@ -243,7 +270,7 @@ class Indexer:
                     offset = 0
                 else:
                     reader_state = checkpoint['reader_state']
-            result = read_increment(path, offset, reader_state, max_tokens=self.block_tokens, token_counter=self.embedder.count_tokens)
+            result = read_increment(path, offset, reader_state, max_tokens=self.block_tokens, token_counter=self.embedder.count_tokens, max_bytes=self.read_bytes)
             if not result['session'].get('id'):
                 return
             if result['session']['id'] != sid:
@@ -255,7 +282,10 @@ class Indexer:
                       prefix_hash=_digest(path, 0, prefix_size),
                       tail_hash=_digest(path, max(0, end - 4096), min(end, 4096)),
                       path=filename, title=self.titles.get(sid, ''), state=state,
-                      exhausted=end == offset or end >= stat.st_size)
+                      exhausted=end == offset or end >= stat.st_size, provenance_version=1)
+            from .session_types import read_provenance
+            result['session'].update(read_provenance(path))
+            cp['reader_state']['session'].update(result['session'])
             session = dict(result['session'], path=filename, state=state, title=self.titles.get(sid, ''))
             self.store.ingest(session, cp, result['chunks'])
             if result['errors']:
@@ -289,7 +319,7 @@ class Indexer:
                       index_pending=bool(self.next_sweep == 0 or self.dirty or not self.events.empty() or
                                          any(stats['jobs'].values()) or
                                          (self.activity and self.activity['operation'] in ('reconcile', 'read', 'embedding'))),
-                      pid=self.pid, started_at=self.started_at, cpu_cores=self.cpu_cores, cpu_unit="physical",
+                      pid=self.pid, started_at=self.started_at, cpu_cores=self.cpu_cores, cpu_unit=self.cpu_unit,
                       activity=copy.deepcopy(self.activity), last_completed_at=self.last_completed_at)
         result['session_selection'] = dict(self.selection)
         result['search_metrics'] = copy.deepcopy(self._search_stats)
@@ -300,6 +330,25 @@ class Indexer:
         return result
 
     def handle_request(self, request):
+        if request.get('track_history') and request.get('op') in ('search', 'literal'):
+            from .search_history import record
+            import uuid
+            ident, started = uuid.uuid4().hex, time.time()
+            record(self.store.db, dict(phase='start', id=ident, started_at=started, parameters=request))
+            try:
+                result = self._handle_request(request)
+            except Exception as exc:
+                record(self.store.db, dict(phase='finish', id=ident, finished_at=time.time(),
+                    duration_seconds=time.time()-started, error=type(exc).__name__ + ': ' + str(exc)))
+                raise
+            matches = result.get('matches', [])
+            record(self.store.db, dict(phase='finish', id=ident, finished_at=time.time(),
+                duration_seconds=time.time()-started, result_count=len(matches) if 'matches' in result else result.get('total', 0),
+                results=[dict(session_id=m['session']['id'],chunk_id=m['id'],distance=m['distance']) for m in matches]))
+            return dict(result, search_request_id=ident)
+        return self._handle_request(request)
+
+    def _handle_request(self, request):
         if request.get('codex_home') and Path(request['codex_home']).resolve() != self.home:
             raise ValueError('codex_home differs from running indexer')
         op = request.get('op')
@@ -309,6 +358,37 @@ class Indexer:
             from .search_history import record
             record(self.store.db, request['event'])
             return {}
+        if op == 'session_cleanup_apply':
+            from .session_management import apply
+            def changed(item, new_path):
+                sid, previous = item['id'], item['path']
+                for path, (known_sid, _) in list(self.paths.items()):
+                    if known_sid == sid:
+                        self.paths.pop(path, None)
+                        self.dirty.pop(path, None)
+                        self.errors.pop(path, None)
+                self.dirty.pop(previous, None)
+                self.errors.pop(previous, None)
+                if new_path is None:
+                    self.store.reset_session(sid)
+                else:
+                    state = 'archived' if Path(new_path).is_relative_to(self.home / 'archived_sessions') else 'active'
+                    self.store.relocate_session(sid, new_path, state)
+                    self.paths[new_path] = (sid, state)
+                    if self.selection.get(state):
+                        self.dirty[new_path] = None
+                self.status(force=True)
+            with self._working('session_cleanup'):
+                result = apply(self.home, request.get('plan'), request.get('confirmation'),
+                               on_change=changed, protected_ids=request.get('protected_ids', ()))
+            # Rescan after any partial operation too, including native command failure.
+            self.next_sweep = 0
+            self.status(force=True)
+            return dict(cleanup=result)
+        if op == 'literal':
+            from .server import _tool_session_search
+            content = _tool_session_search(dict(query=request['query'],mode='literal',codex_home=str(self.home),state=request.get('state','all'),limit=request.get('limit',10),include_snippets=True), selection=self.selection)
+            return json.loads(content[0]['text'])
         if op != 'search':
             raise ValueError('Unknown operation')
         limit = request.get('limit', 10)
@@ -324,9 +404,9 @@ class Indexer:
             matches = self.store.search(vector, limit=limit, state=request.get('state', 'all'), selection=self.selection)
         return dict(matches=matches, **self.status())
 
-    def step(self):
+    def step(self, *, indexing_enabled=True):
         from .settings import read_selection
-        selection = read_selection(self.selection_path)
+        selection = self.selection_reader()
         if selection != self.selection:
             self.selection = selection
             self.dirty.clear()
@@ -343,6 +423,8 @@ class Indexer:
             except Exception as exc:
                 response.put(dict(ok=False, error=type(exc).__name__ + ': ' + str(exc)))
             return True
+        if not indexing_enabled:
+            return False
         if time.monotonic() >= self.next_sweep:
             with self._working('reconcile'):
                 self.reconcile()
@@ -389,12 +471,13 @@ class Indexer:
 
 
 def serve(actor, path):
+    import fcntl
     class Handler(socketserver.StreamRequestHandler):
         def handle(self):
             self.request.settimeout(60)
             try:
-                raw = self.rfile.readline(65537)
-                if not raw.endswith(b'\n') or len(raw) > 65536:
+                raw = self.rfile.readline(MAX_RPC_BYTES + 1)
+                if not raw.endswith(b'\n') or len(raw) > MAX_RPC_BYTES:
                     raise ValueError('Invalid request size')
                 payload = json.loads(raw)
                 if not isinstance(payload, dict):
@@ -404,7 +487,8 @@ def serve(actor, path):
                 else:
                     response = queue.Queue(maxsize=1)
                     actor.requests.put((payload, response))
-                    result = response.get(timeout=60)
+                    wait = cleanup_timeout(payload.get('plan')) if payload.get('op') == 'session_cleanup_apply' else 60
+                    result = response.get(timeout=wait)
             except Exception as exc:
                 result = dict(ok=False, error=type(exc).__name__)
             self.wfile.write(json.dumps(result, ensure_ascii=False).encode() + b'\n')
@@ -447,6 +531,7 @@ def configure_cores(cores):
 
 
 def run(args):
+    import fcntl
     from .embedding import Embedder
     from .store import Store
     from watchdog.events import FileSystemEventHandler

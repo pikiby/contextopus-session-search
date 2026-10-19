@@ -1,3 +1,4 @@
+# Non-English strings are intentional Unicode/UTF-8 search and JSONL fixtures.
 """Real stdio protocol round trips and semantic-client contract checks."""
 import json
 import os
@@ -50,7 +51,7 @@ class MCPTests(unittest.TestCase):
         ])
         self.assertEqual(len(out), 5)
         self.assertEqual(out[0]['result']['capabilities'], {'tools': {}})
-        self.assertEqual({t['name'] for t in out[1]['result']['tools']}, {'session_search', 'session_info', 'session_resume_command', 'index_status'})
+        self.assertEqual({t['name'] for t in out[1]['result']['tools']}, {'session_search', 'session_info', 'session_resume_command', 'index_status', 'session_list', 'session_cleanup_preview', 'session_cleanup_apply'})
         search = json.loads(out[2]['result']['content'][0]['text'])
         self.assertEqual(search['total'], 1)
         self.assertEqual(search['sessions'][0]['snippets'][0]['field'], 'user_message')

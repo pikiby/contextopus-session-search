@@ -19,7 +19,13 @@ def read_selection(path=None):
         return dict(DEFAULT_SELECTION)
     if not isinstance(value, dict) or any(type(value.get(state)) is not bool for state in DEFAULT_SELECTION):
         raise ValueError('Invalid session selection')
-    return {state: value[state] for state in DEFAULT_SELECTION}
+    result = {state: value[state] for state in DEFAULT_SELECTION}
+    if 'types' in value:
+        from .session_types import TYPES
+        if not isinstance(value['types'], list) or any(t not in TYPES for t in value['types']):
+            raise ValueError('Invalid session types')
+        result['types'] = list(dict.fromkeys(value['types']))
+    return result
 
 
 def save_selection(state, enabled, path=None):

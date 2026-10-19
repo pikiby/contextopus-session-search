@@ -53,7 +53,7 @@ class TuiTests(unittest.IsolatedAsyncioTestCase):
             await self.settle(app, pilot)
             self.assertEqual(backend.calls, ['stop'])
             self.assertIn('Indexing stopped', self.text(app, 'state'))
-            self.assertIn('—', self.text(app, 'cpu-value'))
+            self.assertIn('—', self.text(app, 'speed-value'))
             await pilot.press('s')
             await self.settle(app, pilot)
             self.assertEqual(backend.calls, ['stop', 'start'])
@@ -69,10 +69,7 @@ class TuiTests(unittest.IsolatedAsyncioTestCase):
         async with app.run_test(size=(80, 40)) as pilot:
             await self.settle(app, pilot)
             self.assertIn('Indexing running', self.text(app, 'state'))
-            self.assertIn('25.0%', self.text(app, 'cpu-value'))
-            self.assertIn('1.00 GiB', self.text(app, 'memory'))
-            self.assertEqual(app.histories['cpu'][-1][1], 25.0)
-            self.assertEqual(app.histories['ram'][-1][1], 100.0)
+            self.assertEqual(set(app.histories), {'speed'})
             self.assertNotIn('Start indexing', self.text(app, 'toggle'))
             await pilot.press('s')
             await self.settle(app, pilot)
@@ -90,21 +87,21 @@ class TuiTests(unittest.IsolatedAsyncioTestCase):
         app = SessionSearchApp(backend, refresh_interval=0)
         async with app.run_test(size=(80, 24)) as pilot:
             await self.settle(app, pilot)
-            for name in ('state', 'cores', 'cpu-value', 'ram-value', 'sessions', 'remaining', 'indexed', 'progress', 'toggle', 'core-choice', 'quit'):
+            for name in ('state', 'speed-value', 'sessions', 'remaining', 'indexed', 'progress', 'toggle', 'quit'):
                 widget = app.query_one('#' + name)
                 self.assertGreater(widget.region.height, 0, name)
                 self.assertTrue(widget.display, name)
-            await pilot.press('down', 'down', 'down', 'down', 'down')
+            await pilot.press('down', 'down', 'down', 'down')
             self.assertEqual(self.text(app, 'quit'), '▶ Quit')
             self.assertEqual(backend.calls, [])
-            await pilot.press('up', 'up', 'up', 'up', 'up', 'enter')
+            await pilot.press('up', 'up', 'up', 'up', 'enter')
             await self.settle(app, pilot)
             self.assertEqual(backend.calls, ['stop'])
             self.assertEqual(self.text(app, 'toggle'), '▶ Start indexing')
             await pilot.press('enter')
             await self.settle(app, pilot)
             self.assertEqual(backend.calls, ['stop', 'start'])
-            await pilot.press('down', 'down', 'down', 'down', 'down', 'enter')
+            await pilot.press('down', 'down', 'down', 'down', 'enter')
         self.assertEqual(backend.calls, ['stop', 'start'])
 
     async def test_autostart_independent_from_running_and_mcp_display(self):
@@ -113,7 +110,7 @@ class TuiTests(unittest.IsolatedAsyncioTestCase):
         async with app.run_test(size=(80, 24)) as pilot:
             await self.settle(app, pilot)
             self.assertIn('Not running', self.text(app, 'mcp'))
-            await pilot.press('down', 'down', 'enter')
+            await pilot.press('down', 'enter')
             await self.settle(app, pilot)
             self.assertEqual(backend.calls, ['disable'])
             self.assertEqual(backend.snapshot['service'], 'active')
@@ -126,7 +123,7 @@ class TuiTests(unittest.IsolatedAsyncioTestCase):
             await pilot.press('down', 'down', 'down')
             await pilot.pause()
             self.assertLessEqual(app.query_one('#quit').region.bottom, 24)
-            self.assertLess(app.query_one('#cpu-chart').region.x, app.query_one('#ram-chart').region.x)
+            self.assertEqual(len(app.query('#speed-chart')), 1)
 
     async def test_session_selection_works_while_stopped(self):
         backend = Backend()
@@ -140,7 +137,7 @@ class TuiTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn('N/A', self.text(app, 'eta'))
             self.assertIn('Active sessions Enabled', self.text(app, 'active-sessions'))
             self.assertIn('Archived sessions Disabled', self.text(app, 'archived-sessions'))
-            await pilot.press('down', 'down', 'down', 'enter')
+            await pilot.press('down', 'down', 'enter')
             await self.settle(app, pilot)
             await pilot.press('down', 'enter')
             await self.settle(app, pilot)
@@ -149,21 +146,16 @@ class TuiTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn('Active sessions Disabled', self.text(app, 'active-sessions'))
             self.assertIn('Archived sessions Enabled', self.text(app, 'archived-sessions'))
 
-    async def test_core_selection_applies_only_on_enter(self):
+    async def test_resource_controls_are_absent(self):
         backend = Backend()
         app = SessionSearchApp(backend, refresh_interval=0)
-        async with app.run_test(size=(80, 24)) as pilot:
+        async with app.run_test(size=(80, 40)) as pilot:
             await self.settle(app, pilot)
-            await pilot.press('down', 'right', 'right', 'left')
-            self.assertEqual(app._core_choice, 3)
+            for name in ('cpu-row', 'ram-row', 'cpu-chart', 'ram-chart', 'cores', 'memory', 'core-choice'):
+                self.assertEqual(len(app.query('#' + name)), 0, name)
+            await pilot.press('down', 'right', 'left')
             self.assertEqual(backend.calls, [])
-            await pilot.press('enter')
-            await self.settle(app, pilot)
-            self.assertEqual(backend.calls, [('cores', 3)])
-            await pilot.press('left', 'left', 'left', 'left')
-            self.assertEqual(app._core_choice, 1)
-            await pilot.press('q')
-        self.assertEqual(backend.calls, [('cores', 3)])
+            self.assertEqual(self.text(app, 'index-autostart'), '▶ Indexer autostart Enabled')
 
     async def test_idle_errors_missing_metrics_and_zero(self):
         backend = Backend()
@@ -172,17 +164,14 @@ class TuiTests(unittest.IsolatedAsyncioTestCase):
         async with app.run_test(size=(70, 11)) as pilot:
             await self.settle(app, pilot)
             self.assertIn('Indexing idle', self.text(app, 'state'))
-            self.assertIn('0.0%', self.text(app, 'cpu-value'))
-            self.assertIn('0.00 GiB', self.text(app, 'memory'))
             self.assertIn('Sessions        0', self.text(app, 'sessions'))
             app.render_status(dict(app.last_status, cpu_total=16, cpu_cores=4, cpu_percent=25.0))
-            self.assertEqual(self.text(app, 'cores'), '4 of 16 cores')
             snapshot = dict(app.last_status, cpu_percent=None, memory_bytes=None, sessions=None, index_available=False)
             app.render_status(snapshot)
             self.assertIn('error', self.text(app, 'state'))
-            self.assertIn('—', self.text(app, 'cpu-value'))
+            self.assertIn('—', self.text(app, 'speed-value'))
             self.assertIn('—', self.text(app, 'sessions'))
-            self.assertNotIn('█', self.text(app, 'cpu-chart').splitlines()[0])
+            self.assertNotIn('█', self.text(app, 'speed-chart').splitlines()[0])
             app.render_status(dict(snapshot, service='active', index_available=True, index_pending=None))
             self.assertIn('error', self.text(app, 'state'))
             app.render_status(dict(snapshot, service='failed'))
@@ -197,10 +186,9 @@ class TuiTests(unittest.IsolatedAsyncioTestCase):
         async with app.run_test(size=(120, 40)) as pilot:
             await self.settle(app, pilot)
             app.render_status(dict(app.last_status, cpu_percent=20, memory_bytes=1024))
-            self.assertEqual([v for _,v in app.histories['cpu']], [0, 20])
+            self.assertEqual(set(app.histories), {'speed'})
             app.render_status(dict(app.last_status, process_identity='123:2', cpu_percent=None))
-            self.assertIsNone(app.histories['cpu'][-1][1])
-            self.assertIsNotNone(app.histories['ram'][-1][1])
+            self.assertIsNone(app.histories['speed'][-1][1])
             self.assertEqual(self.text(app, 'toggle'), '▶ Stop indexing')
             self.assertEqual(self.text(app, 'quit'), '  Quit')
             self.assertEqual(len(app.query(Sparkline)), 0)
@@ -233,7 +221,7 @@ class TuiTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn('~', self.text(app, 'eta'))
             self.assertEqual(app.histories['speed'][-1][1], 150)
             self.assertIn('200', self.text(app, 'speed-chart'))
-            self.assertTrue(app.query_one('#cpu-value').render().spans)
+            self.assertTrue(app.query_one('#speed-value').render().spans)
             self.assertLess(app.query_one('#speed-chart').region.bottom, app.query_one('#mcp').region.y)
             app.render_status(dict(app.last_status, chunks=0, vectors=0))
             self.assertIn('0.0%', self.text(app, 'progress'))
@@ -253,13 +241,10 @@ class TuiTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn('1.13 GiB',self.text(app,'database'))
             self.assertIn('Qwen3-Embedding-0.6B',self.text(app,'model'))
             self.assertIn('Calculating…',self.text(app,'eta'))
-            charts=[app.query_one('#'+k+'-chart').region for k in ('cpu','ram','speed')]
-            self.assertEqual(len({r.y for r in charts}),1)
-            self.assertLess(charts[0].right,charts[1].x+1)
-            self.assertLess(charts[1].right,charts[2].x+1)
+            self.assertEqual(len(app.query('#speed-chart')), 1)
             groups=[app.query_one('#'+k).region for k in ('indexing','search','actions')]
             self.assertTrue(all(a.bottom < b.y for a,b in zip(groups,groups[1:])))
-            self.assertEqual(self.text(app,'hints'),'↑↓ Select   ←→ Change   Enter Apply   Q Quit')
+            self.assertEqual(self.text(app,'hints'),'↑↓ Select   Enter Apply   Q Quit')
             self.assertEqual(app.query_one('#indexed').region.x, app.query_one('#remaining').region.x)
             self.assertEqual(app.query_one('#sessions').region.x, app.query_one('#database').region.x)
 
@@ -272,8 +257,8 @@ class TuiTests(unittest.IsolatedAsyncioTestCase):
                                                    (75,2,1),(54,2,1),(52,1,1),(40,1,1),(120,3,2)]:
                 await pilot.resize_terminal(width,80)
                 await pilot.pause()
-                blocks = [app.query_one('#'+key+'-row').region for key in ('cpu','ram','speed')]
-                self.assertEqual(len({block.y for block in blocks}), (3+columns-1)//columns, width)
+                blocks = [app.query_one('#'+key+'-row').region for key in ('speed',)]
+                self.assertEqual(len(blocks), 1, width)
                 self.assertTrue(all(block.width == 25 for block in blocks), width)
                 self.assertEqual(blocks[0].x,1)
                 self.assertTrue(all(block.right <= min(width,79)-1 for block in blocks),width)
@@ -290,7 +275,6 @@ class TuiTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(app.query_one('#actions').region.x,0)
                 self.assertEqual(histories,{key:list(values) for key,values in app.histories.items()})
             self.assertEqual(self.text(app,'toggle'),'▶ Stop indexing')
-            self.assertEqual(self.text(app,'core-choice'),'  Allocated cores ◀ 2 ▶')
             self.assertEqual(self.text(app,'index-autostart'),'  Indexer autostart Enabled')
 
     async def test_render_keeps_terminal_background_and_metric_colors(self):

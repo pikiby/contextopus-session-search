@@ -1,17 +1,28 @@
-# Локальное сравнение размеров блоков и размерности на ограниченной выборке
+# Bounded standalone block-size and dimension comparison
 
-Измерения выполнены 2026-10-14 UTC с существующим локальным снимком Qwen3-Embedding-0.6B фиксированной ревизии (97b0c614be4d77ee51c0cef4e5f07c00f9eb65b3): CPU, float32, два потока PyTorch, размер пакета — один блок. Скачиваний и изменений рабочего индекса не было.
+These measurements were taken on 2026-10-14 UTC using an existing local snapshot
+of `Qwen3-Embedding-0.6B`, revision
+`97b0c614be4d77ee51c0cef4e5f07c00f9eb65b3`: CPU, float32, two PyTorch threads,
+one block per batch. No model download or working-index mutation occurred.
+They describe the standalone implementation and do not measure the new Core module.
 
-## Результат
+## Findings and limits
 
-По решению пользователя оставлены блоки по 512 токенов и 1024 измерения: 12/12 точных целевых фрагментов попали в первые пять результатов. При 512 измерениях найдено 11/12, а измеренный размер SQLite уменьшился примерно вдвое. Снижение размерности не сокращает вычисление моделью полного вектора; выбран профиль 1024 ради качества поиска. Вариант с 256 измерениями пропустил два фрагмента об обновлении конца переписки и реже находил цель первым результатом. Измерения показывают компромисс между качеством и объёмом хранения; снижение размерности сопровождалось потерей качества.
+The selected standalone profile remains 512 tokens and 1024 dimensions: 12/12
+exact target spans appeared in the first five results. At 512 dimensions, 11/12
+were found and measured SQLite storage roughly halved. Truncating a vector does
+not reduce full model computation. The 256-dimensional profile missed two target
+spans and ranked the target first less often. The sample shows a storage/quality
+tradeoff; it does not establish an optimum for all conversation history.
 
-Блоки по 2048 токенов дали 12/12 при всех размерностях. Однако уникальных блоков было всего восемь, поэтому попадание в первые пять результатов — слабая проверка. Такие блоки также дают менее точную локализацию и дольше обрабатываются моделью. Выборка не доказывает оптимальность размера блока.
+2048-token blocks achieved 12/12 at each dimension, but there were only eight
+unique blocks. A top-five check is therefore weak. Larger blocks also locate
+answers less precisely and take longer to embed.
 
-## Матрица результатов
+## Measured results
 
-| Токенов в блоке | Измерений | Векторов | Эмбеддинги + разбор, с | Запись, с | Всего, с | База, байт | Recall@5 | Hit@1 | MRR@5 | Среднее время поиска, мс |
-|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| Tokens/block | Dimensions | Vectors | Embedding + parse, s | Write, s | Total, s | Database bytes | Recall@5 | Hit@1 | MRR@5 | Mean search, ms |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
 | 512 | 256 | 27 | 64.18 | 0.19 | 64.37 | 1343488 | 10/12 | 0.333 | 0.556 | 0.296 |
 | 512 | 512 | 27 | 64.18 | 0.17 | 64.35 | 2392064 | 11/12 | 0.667 | 0.771 | 0.968 |
 | 512 | 1024 | 27 | 64.18 | 0.22 | 64.40 | 4493312 | 12/12 | 0.667 | 0.787 | 1.401 |
@@ -22,52 +33,86 @@
 | 2048 | 512 | 8 | 70.66 | 0.74 | 71.40 | 2351104 | 12/12 | 0.667 | 0.812 | 1.761 |
 | 2048 | 1024 | 8 | 70.66 | 0.36 | 71.03 | 4452352 | 12/12 | 0.583 | 0.757 | 2.551 |
 
-Пиковый RSS процесса во всех строках составил 3788.1 МиБ. Это накопленный максимум за время жизни процесса, включая загрузку модели; память отдельных вариантов независимо не измерялась. Время поиска измерено однократно на двенадцати запросах с прогретым кешем и не должно обобщаться. Время записи 5.46 секунды для 2048/256 выделяется среди остальных результатов одного запуска; повторных измерений времени не проводилось.
+Peak process RSS was 3788.1 MiB in every row. This is the cumulative high-water
+mark over the process lifetime, including model loading; individual variants'
+peaks were not measured independently. Search timing used one pass over twelve
+queries with a warm cache and should not be generalized. The 5.46 s write time
+for 2048/256 is an outlier in this single run; no timing repeats were performed.
 
-Косвенная оценка точности локализации — медиана длины сохранённых блоков, измеренная по всем блокам, включая не найденные запросами:
+Median stored block lengths, across all blocks rather than only retrieved ones:
 
-- 512 токенов: 1524 символа (диапазон 725–1718).
-- 1024 токена: 3062.5 символа (диапазон 1157–3329).
-- 2048 токенов: 6051.5 символа (диапазон 1112–6578).
+- 512 tokens: 1524 characters (range 725–1718).
+- 1024 tokens: 3062.5 characters (range 1157–3329).
+- 2048 tokens: 6051.5 characters (range 1112–6578).
 
-## Фиксированная выборка и эталонные ответы
+## Fixed corpus and gold spans
 
-Два непрерывных диапазона исходных JSONL содержат 149 канонических сообщений пользователя и ассистента, 55,525 символов до добавления префиксов ролей. Все двенадцать целевых ответов находятся в части session-search; часть deskstate добавляет посторонние для запросов обсуждения. Выборка узкая и не представляет все сессии. Контекст среды, рассуждения, сводки и записи инструментов исключаются штатным reader.
+Two contiguous JSONL byte ranges contain 149 canonical user/assistant messages,
+55,525 characters before role prefixes. All twelve targets are in the Session
+Search conversation; a deskstate conversation adds unrelated content. This is a
+narrow corpus. The normal reader excludes environment context, reasoning,
+summaries and tool records. The source paths and hashes below identify that historical sample.
+`$CODEX_HOME` replaces the personal source-root path; these are not
+installation prerequisites.
 
-| ID сессии | Путь исходного JSONL | Диапазон байтов [начало, конец) | SHA-256 диапазона |
-|---|---|---|---|
-| 00000000-0000-4000-8000-000000000001 | /home/example/.codex/sessions/2026/09/14/rollout-2026-09-14T10-34-14-00000000-0000-4000-8000-000000000001.jsonl | 120506510–130584275 | f1328217236024e79c43500526519750bc7c5cb99c46171c3465c936bf4e329f |
-| 00000000-0000-4000-8000-000000000002 | /home/example/.codex/sessions/2026/09/23/rollout-2026-09-23T11-42-44-00000000-0000-4000-8000-000000000002.jsonl | 7502909–8788912 | 95607e871e51440fb764b73fcfe6aef4667606d940ff43db91cf317cbdfe9fe7 |
+| Session ID | JSONL path with source-root placeholder | Byte range [start, end) | Range SHA-256 |
+| --- | --- | --- | --- |
+| 00000000-0000-4000-8000-000000000001 | $CODEX_HOME/sessions/2026/09/14/rollout-2026-09-14T10-34-14-00000000-0000-4000-8000-000000000001.jsonl | 120506510–130584275 | f1328217236024e79c43500526519750bc7c5cb99c46171c3465c936bf4e329f |
+| 00000000-0000-4000-8000-000000000002 | $CODEX_HOME/sessions/2026/09/23/rollout-2026-09-23T11-42-44-00000000-0000-4000-8000-000000000002.jsonl | 7502909–8788912 | 95607e871e51440fb764b73fcfe6aef4667606d940ff43db91cf317cbdfe9fe7 |
 
-Вопросы, точные байтовые смещения целевых записей и диапазоны символов зафиксированы в локальном манифесте до поиска моделью. Диапазоны относятся к очищенному каноническому тексту сообщения. Исходные тексты переписки в отчёт не включены.
+Questions and exact record/answer spans were fixed in a local manifest before
+model search. The table translates the original Russian questions into English
+for documentation; reproduce the original-language queries from the original
+manifest to compare directly with these numbers. Character spans refer to the
+cleaned canonical message text. Conversation bodies are not included here.
 
-| Вопрос | Байтовое смещение записи | Диапазон символов ответа [начало, конец) |
-|---|---:|---|
-| Какие состояния сессий включены в поиск по умолчанию? | 126854689 | 80–91 |
-| Сохранятся ли готовые эмбеддинги после отключения архивных сессий? | 126975031 | 238–274 |
-| Как обновлять конец переписки без пересчёта всей сессии? | 127082386 | 963–998 |
-| Нужно ли индексировать неполный последний блок? | 127082386 | 1254–1296 |
-| Какова опасность двухуровневого поиска? | 130371265 | 631–670 |
-| Сколько памяти float32 занимает вектор на 256 измерений? | 130398415 | 415–429 |
-| Ограничивает ли размерность вектора длину входного текста? | 130398415 | 568–609 |
-| Может ли текущая модель эмбеддингов сама писать описания? | 130421925 | 186–210 |
-| Почему краткий пересказ может потерять важные решения? | 130441012 | 8–52 |
-| Удаляются ли сообщения при устранении одинаковых эмбеддингов? | 130463492 | 352–388 |
-| Каким образом SHA-256 предотвращает повторный запуск модели? | 130484125 | 164–192 |
-| Нужна ли смена модели для блоков большего размера? | 130549439 | 31–57 |
+| Question (English translation) | Record byte offset | Answer character span [start, end) |
+| --- | ---: | --- |
+| Which session states are searched by default? | 126854689 | 80–91 |
+| Are existing embeddings retained when archived sessions are excluded? | 126975031 | 238–274 |
+| How can the conversation tail be updated without recalculating the entire session? | 127082386 | 963–998 |
+| Should the incomplete final block be indexed? | 127082386 | 1254–1296 |
+| What is the risk of two-stage search? | 130371265 | 631–670 |
+| How much float32 memory does a 256-dimensional vector use? | 130398415 | 415–429 |
+| Does vector dimensionality limit input text length? | 130398415 | 568–609 |
+| Can the current embedding model write descriptions itself? | 130421925 | 186–210 |
+| Why can a brief summary lose important decisions? | 130441012 | 8–52 |
+| Does deduplicating embeddings delete messages? | 130463492 | 352–388 |
+| How does SHA-256 prevent rerunning the model? | 130484125 | 164–192 |
+| Does using larger blocks require a different model? | 130549439 | 31–57 |
 
-## Методика и воспроизведение
+## Method and reproduction
 
-Один и тот же ограниченный текст разбирается трижды с лимитами 512, 1024 и 2048 токенов, подсчитанных действительным токенизатором Qwen. Каждый полученный уникальный блок обрабатывается моделью один раз с исходной размерностью 1024; усечение входа запрещено. Для уменьшенной размерности берутся первые 256 или 512 координат и выполняется повторная нормализация. Векторы запросов преобразуются так же. Снижение размерности уменьшает затраты на хранение и сравнение векторов; вычисления модели остаются прежними. Все девять индексов используют штатный Store в новом временном каталоге.
+The same bounded text was parsed with token limits 512, 1024 and 2048 using the
+actual Qwen tokenizer. Each unique block was embedded once at the original 1024
+dimensions, with input truncation forbidden. Lower-dimensional vectors used the
+first 256 or 512 coordinates followed by normalization; query vectors used the
+same transformation. All nine indexes used the normal standalone Store in fresh
+temporary directories.
 
-Запрос считается успешным, если один из пяти ближайших уникальных блоков содержит в метаданных sources точный ID исходной сессии, смещение записи и весь заранее размеченный диапазон ответа. Hit@1 и MRR@5 используют ту же цель. Размер базы включает SQLite, WAL и SHM на момент измерения после контрольной точки WAL. Выделение памяти и страниц sqlite-vec делает эти небольшие индексы значительно больше самих векторов.
+A query succeeded when a top-five unique block contained the exact session ID,
+record byte offset and complete pre-labelled answer span in its source metadata.
+Hit@1 and MRR@5 use the same target. Database size includes SQLite, WAL and SHM
+after a WAL checkpoint. sqlite-vec allocation makes these small indexes much
+larger than their vectors alone.
 
-Локальный манифест этого запуска: /tmp/session-block-gold.json. SHA-256 манифеста: 0ee496f2bcb2b13e15e2086b415f6ffad7362ddb3412c52163c8c05a31d6c562. Результаты и временные индексы: /tmp/session-block-comparison. Эти временные артефакты можно удалить независимо от исходных сессий.
+Original temporary manifest: `/tmp/session-block-gold.json`.
+SHA-256: `0ee496f2bcb2b13e15e2086b415f6ffad7362ddb3412c52163c8c05a31d6c562`.
+Original output: `/tmp/session-block-comparison`. These paths describe the
+historical run and may no longer exist. Temporary output is separate from source
+transcripts.
 
-Воссоздайте манифест с приведёнными выше полями выборки и запросов (`corpus`: path, session_id, start_offset, end_offset; `queries`: question, session_id, record_offset, char_start, char_end), затем запустите скрипт в существующем установленном окружении:
+To run a new experiment, supply a manifest with `corpus` entries (`path`,
+`session_id`, `start_offset`, `end_offset`) and original-language `queries`
+(`question`, `session_id`, `record_offset`, `char_start`, `char_end`). Use an
+existing environment containing the standalone model dependencies and weights:
 
 ```bash
-/home/example/.local/share/codex-session-index/venv/bin/python scripts/compare-blocks.py --manifest /tmp/session-block-gold.json --output /tmp/session-block-comparison-new --threads 2
+/path/to/existing/python scripts/compare-blocks.py --manifest /path/to/manifest.json --output /tmp/session-block-comparison-new --threads 2
 ```
 
-Скрипт запрещает перезапись существующей базы сравнения. Загрузка модели и создание эмбеддингов двенадцати запросов исключены из времени индексации; разбор блоков, вычисление их эмбеддингов и запись в SQLite включены. Задержка холодного старта, производительность большого индекса, независимые пики памяти отдельных вариантов и статистическая достоверность не оценивались.
+The script refuses an existing comparison database. Model loading and the twelve
+query embeddings are excluded from indexing time; parsing, block embeddings and
+SQLite writes are included. Cold startup, full-history performance, independent
+memory peaks and statistical confidence were not evaluated. The historical
+manifest is needed to reproduce the exact original query text and scores.

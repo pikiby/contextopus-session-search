@@ -1,0 +1,506 @@
+{
+  "id": "session_search",
+  "version": "0.8.0",
+  "core_requires": ">=1.5,<2",
+  "rag": true,
+  "storage": {
+    "engine": "sqlite",
+    "schema_version": 1,
+    "migrations": "migrations",
+    "compatible_versions": {
+      "min": 1,
+      "max": 1
+    }
+  },
+  "service": {
+    "factory": "worker.py:create_service",
+    "ready_timeout": 30,
+    "stop_timeout": 10
+  },
+  "tui": "session_search.open_tui",
+  "operations": [
+    {
+      "name": "session_search.status",
+      "kind": "query",
+      "service": true,
+      "arguments_schema": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "session_search.settings",
+      "kind": "query",
+      "service": true,
+      "arguments_schema": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "session_search.open_tui",
+      "kind": "query",
+      "service": true,
+      "arguments_schema": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "session_search.configure",
+      "kind": "execute",
+      "service": true,
+      "arguments_schema": {
+        "type": "object",
+        "properties": {
+          "codex_home": {
+            "type": "string"
+          },
+          "block_tokens": {
+            "enum": [
+              512,
+              1024,
+              2048
+            ]
+          },
+          "autostart": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "codex_home"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "session_search.start",
+      "kind": "execute",
+      "service": true,
+      "arguments_schema": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "additionalProperties": false
+      },
+      "timeout": 120
+    },
+    {
+      "name": "session_search.stop",
+      "kind": "execute",
+      "service": true,
+      "arguments_schema": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "session_search.selection",
+      "kind": "execute",
+      "service": true,
+      "arguments_schema": {
+        "type": "object",
+        "properties": {
+          "active": {
+            "type": "boolean"
+          },
+          "archived": {
+            "type": "boolean"
+          },
+          "types": {
+            "type": "array",
+            "items": {
+              "enum": [
+                "main",
+                "subagent",
+                "guardian",
+                "exec",
+                "unknown"
+              ]
+            }
+          }
+        },
+        "required": [
+          "active",
+          "archived",
+          "types"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "session_search.search",
+      "kind": "query",
+      "service": true,
+      "arguments_schema": {
+        "type": "object",
+        "properties": {
+          "query": {
+            "type": "string",
+            "minLength": 1
+          },
+          "mode": {
+            "enum": [
+              "semantic",
+              "literal"
+            ]
+          },
+          "state": {
+            "enum": [
+              "all",
+              "active",
+              "archived"
+            ]
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 200
+          }
+        },
+        "required": [
+          "query"
+        ],
+        "additionalProperties": false
+      },
+      "timeout": 120
+    },
+    {
+      "name": "session_search.history",
+      "kind": "query",
+      "service": true,
+      "arguments_schema": {
+        "type": "object",
+        "properties": {
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 200
+          }
+        },
+        "required": [],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "session_search.info",
+      "kind": "query",
+      "service": true,
+      "arguments_schema": {
+        "type": "object",
+        "properties": {
+          "state": {
+            "type": "string",
+            "enum": [
+              "active",
+              "archived",
+              "all"
+            ],
+            "description": "Session storage to inspect."
+          },
+          "session": {
+            "type": "string",
+            "description": "Session id, renamed session name, file name or path."
+          },
+          "include_messages": {
+            "type": "boolean",
+            "description": "Include compact first/last user message previews. Default true."
+          }
+        },
+        "required": [
+          "session"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "session_search.resume_command",
+      "kind": "query",
+      "service": true,
+      "arguments_schema": {
+        "type": "object",
+        "properties": {
+          "state": {
+            "type": "string",
+            "enum": [
+              "active",
+              "archived",
+              "all"
+            ],
+            "description": "Session storage to inspect."
+          },
+          "session": {
+            "type": "string",
+            "description": "Session id, renamed session name, file name or path."
+          }
+        },
+        "required": [
+          "session"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "session_search.list",
+      "kind": "query",
+      "service": true,
+      "arguments_schema": {
+        "type": "object",
+        "properties": {
+          "filters": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "state": {
+                "type": "string",
+                "enum": [
+                  "active",
+                  "archived",
+                  "all"
+                ]
+              },
+              "cwd": {
+                "type": "string",
+                "description": "Exact working directory."
+              },
+              "cwd_prefix": {
+                "type": "string",
+                "description": "Working directory subtree, path-component aware."
+              },
+              "path": {
+                "type": "string",
+                "description": "Exact rollout file path."
+              },
+              "created_after": {
+                "type": "string",
+                "description": "Inclusive ISO 8601 bound; timezone defaults to UTC. Missing dates do not match."
+              },
+              "created_before": {
+                "type": "string",
+                "description": "Inclusive ISO 8601 bound; timezone defaults to UTC. Missing dates do not match."
+              },
+              "last_message_after": {
+                "type": "string",
+                "description": "Inclusive ISO 8601 bound; timezone defaults to UTC. Missing dates do not match."
+              },
+              "last_message_before": {
+                "type": "string",
+                "description": "Inclusive ISO 8601 bound; timezone defaults to UTC. Missing dates do not match."
+              },
+              "min_bytes": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "max_bytes": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "session_types": {
+                "type": "array",
+                "items": {
+                  "enum": [
+                    "main",
+                    "subagent",
+                    "guardian",
+                    "exec",
+                    "unknown"
+                  ]
+                }
+              },
+              "models": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "description": "Match any exact model name recorded in turn_context, not provider name."
+              },
+              "ids": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "offset": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 1000
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "session_search.cleanup_preview",
+      "kind": "query",
+      "service": true,
+      "arguments_schema": {
+        "type": "object",
+        "properties": {
+          "action": {
+            "type": "string",
+            "enum": [
+              "archive",
+              "unarchive",
+              "delete"
+            ]
+          },
+          "filters": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "state": {
+                "type": "string",
+                "enum": [
+                  "active",
+                  "archived",
+                  "all"
+                ]
+              },
+              "cwd": {
+                "type": "string",
+                "description": "Exact working directory."
+              },
+              "cwd_prefix": {
+                "type": "string",
+                "description": "Working directory subtree, path-component aware."
+              },
+              "path": {
+                "type": "string",
+                "description": "Exact rollout file path."
+              },
+              "created_after": {
+                "type": "string",
+                "description": "Inclusive ISO 8601 bound; timezone defaults to UTC. Missing dates do not match."
+              },
+              "created_before": {
+                "type": "string",
+                "description": "Inclusive ISO 8601 bound; timezone defaults to UTC. Missing dates do not match."
+              },
+              "last_message_after": {
+                "type": "string",
+                "description": "Inclusive ISO 8601 bound; timezone defaults to UTC. Missing dates do not match."
+              },
+              "last_message_before": {
+                "type": "string",
+                "description": "Inclusive ISO 8601 bound; timezone defaults to UTC. Missing dates do not match."
+              },
+              "min_bytes": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "max_bytes": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "session_types": {
+                "type": "array",
+                "items": {
+                  "enum": [
+                    "main",
+                    "subagent",
+                    "guardian",
+                    "exec",
+                    "unknown"
+                  ]
+                }
+              },
+              "models": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "description": "Match any exact model name recorded in turn_context, not provider name."
+              },
+              "ids": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "required": [
+          "action"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "session_search.cleanup_apply",
+      "kind": "execute",
+      "service": true,
+      "arguments_schema": {
+        "type": "object",
+        "properties": {
+          "plan": {
+            "type": "object"
+          },
+          "confirmation": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "plan",
+          "confirmation"
+        ],
+        "additionalProperties": false
+      },
+      "timeout": 3600
+    },
+    {
+      "name": "session_search.migration_preview",
+      "kind": "query",
+      "service": true,
+      "arguments_schema": {
+        "type": "object",
+        "properties": {
+          "source": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "source"
+        ],
+        "additionalProperties": false
+      },
+      "timeout": 120
+    },
+    {
+      "name": "session_search.migration_apply",
+      "kind": "execute",
+      "service": true,
+      "arguments_schema": {
+        "type": "object",
+        "properties": {
+          "plan": {
+            "type": "object"
+          },
+          "confirmation": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "plan",
+          "confirmation"
+        ],
+        "additionalProperties": false
+      },
+      "timeout": 3600
+    }
+  ]
+}

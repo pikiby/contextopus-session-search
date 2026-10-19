@@ -1,3 +1,4 @@
+# Non-English strings are intentional Unicode/UTF-8 search and JSONL fixtures.
 import sqlite3
 import unittest
 from session_search.charts import bar, history, estimated_time
