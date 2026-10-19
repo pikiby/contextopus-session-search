@@ -55,7 +55,7 @@ summaries and tool records. The source paths and hashes below identify that hist
 `$CODEX_HOME` replaces the personal source-root path; these are not
 installation prerequisites.
 
-| Session ID | JSONL path with source-root placeholder | Byte range [start, end) | Range SHA-256 |
+| Anonymized session ID | JSONL path with source-root and ID placeholders | Byte range [start, end) | Range SHA-256 |
 | --- | --- | --- | --- |
 | 00000000-0000-4000-8000-000000000001 | $CODEX_HOME/sessions/2026/09/14/rollout-2026-09-14T10-34-14-00000000-0000-4000-8000-000000000001.jsonl | 120506510–130584275 | f1328217236024e79c43500526519750bc7c5cb99c46171c3465c936bf4e329f |
 | 00000000-0000-4000-8000-000000000002 | $CODEX_HOME/sessions/2026/09/23/rollout-2026-09-23T11-42-44-00000000-0000-4000-8000-000000000002.jsonl | 7502909–8788912 | 95607e871e51440fb764b73fcfe6aef4667606d940ff43db91cf317cbdfe9fe7 |
