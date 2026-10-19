@@ -6,7 +6,7 @@ param(
     [switch]$Plan
 )
 $ErrorActionPreference = "Stop"
-$core = Get-Command contextopus -CommandType Application -ErrorAction SilentlyContinue
+$core = @(Get-Command contextopus -CommandType Application -ErrorAction SilentlyContinue)[0]
 if (-not $core) {
     [Console]::Error.WriteLine("Core 1.5+ is required. Install its starter first:")
     [Console]::Error.WriteLine("https://github.com/pikiby/contextopus-core/releases")

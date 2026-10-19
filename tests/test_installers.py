@@ -46,22 +46,25 @@ def test_powershell_delegates_to_isolated_core_executable(tmp_path):
         pytest.skip("Native PowerShell is required for this wrapper test")
     import json
     import shlex
-    binary = tmp_path / "bin"
-    binary.mkdir()
     helper = tmp_path / "record_arguments.py"
-    helper.write_text("import json,os,sys\nfrom pathlib import Path\nPath(os.environ['INSTALL_TEST_LOG']).write_text(json.dumps(sys.argv[1:]))\nraise SystemExit(7)\n")
-    if os.name == "nt":
-        fake = binary / "contextopus.cmd"
-        fake.write_text('@echo off\n"' + sys.executable + '" "' + str(helper) + '" %*\n')
-    else:
-        fake = binary / "contextopus"
-        fake.write_text("#!/bin/sh\nexec " + shlex.quote(sys.executable) + " " + shlex.quote(str(helper)) + ' "$@"\n')
-        fake.chmod(0o755)
+    helper.write_text("import json,os,sys\nfrom pathlib import Path\nPath(os.environ['INSTALL_TEST_LOG']).write_text(json.dumps({'launcher':sys.argv[1],'arguments':sys.argv[2:]}))\nraise SystemExit(7)\n")
+    binaries = []
+    for label in ("first", "second"):
+        binary = tmp_path / label
+        binary.mkdir()
+        binaries.append(str(binary))
+        if os.name == "nt":
+            fake = binary / "contextopus.cmd"
+            fake.write_text('@echo off\n"' + sys.executable + '" "' + str(helper) + '" ' + label + ' %*\n')
+        else:
+            fake = binary / "contextopus"
+            fake.write_text("#!/bin/sh\nexec " + shlex.quote(sys.executable) + " " + shlex.quote(str(helper)) + " " + label + ' "$@"\n')
+            fake.chmod(0o755)
     source = runpy.run_path(str(ROOT / "scripts/build-module.py"))["build"](tmp_path / "module")
     target = tmp_path / "root with spaces"
     log = tmp_path / "arguments.json"
-    env = dict(os.environ, PATH=str(binary) + os.pathsep + os.environ.get("PATH", ""), INSTALL_TEST_LOG=str(log))
+    env = dict(os.environ, PATH=os.pathsep.join(binaries + [os.environ.get("PATH", "")]), INSTALL_TEST_LOG=str(log))
     result = subprocess.run([shell, "-NoProfile", "-File", str(source / "install.ps1"), "-Root", str(target), "-Plan"], env=env, capture_output=True, text=True)
     assert result.returncode == 7, result.stdout + result.stderr
-    assert json.loads(log.read_text()) == ["--root", str(target), "modules", "install", "session_search", "--source", str(source), "--plan"]
+    assert json.loads(log.read_text()) == {"launcher": "first", "arguments": ["--root", str(target), "modules", "install", "session_search", "--source", str(source), "--plan"]}
     assert not target.exists()
