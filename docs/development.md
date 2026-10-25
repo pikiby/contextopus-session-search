@@ -1,89 +1,54 @@
 # Development and verification
 
-Session Search owns its source, module manifest and migrations, tests and build
-scripts. It uses Core through declared APIs. Core and Workspace remain separate
-repositories; this module does not require a sibling checkout or Workspace.
+Session Search 0.9 uses session cards. The folder module is the supported build;
+it uses Core document reconciliation, module SQL storage and shared RAG.
 
 ## Source layout
 
-| Path | Responsibility |
-| --- | --- |
-| `src/session_search/module_service.py`, `module_store.py` | Persistent child service, Core SQL and shared embeddings/RAG adapters. |
-| `module/module.json`, `module/migrations/`, `module/package/` | Module contract, SQL schema and child/TUI entry points. |
-| `src/session_search/reader.py`, `indexer.py`, `store.py` | Conversation blocks, deduplication, checkpoints and durable jobs. Shared by both delivery paths. |
-| `src/session_search/session_management.py`, `session_types.py` | Metadata inventory, source classification and exact native-operation plans. |
-| `src/session_search/tui.py`, `tui_core_backend.py` | Core-aware terminal interface. |
-| `src/session_search/embedding.py`, `server.py`, `tui_backend.py` | Standalone model/MCP and retained daemon-backend compatibility code. |
-| `src/session_search/core_module.py`, `migration.py` | Earlier in-process integration compatibility; excluded from the folder artifact. |
-| `scripts/build-module.py` | Primary module folder/ZIP builder. |
-| `scripts/build-deb.sh`, `packaging/`, `requirements-*.txt` | Secondary standalone package and environment requirements. |
-| `tests/` | Shared logic, standalone compatibility, module lifecycle and packaging coverage. |
+- `src/session_search/cards.py`: Markdown authority, validation, revision checks,
+  SQL projection, reconciliation and semantic retrieval.
+- `src/session_search/card_service.py`: request-driven Core child service.
+- `module/module.json`: operations, storage, skills and Library contribution.
+- `module/package/procedures/` and `skills/`: agent-maintained session descriptions.
+- `module/migrations/002-session-cards.sql`: card projection; the original schema
+  remains available so upgrades preserve existing data.
+- `scripts/build-module.py`: explicit allowlist for the folder and ZIP artifact.
 
-The Python wheel entry point is retained for earlier integration compatibility.
-Install the folder artifact for the current persistent module architecture.
-The earlier in-process adapter retains full catalog recovery through bounded,
-snapshot-based Core revision pages; it no longer calls the unbounded revision
-lookup. The primary folder service instead recovers through durable jobs/outbox
-and does not perform a full startup inventory.
+Older transcript-indexing sources and standalone packaging remain in the source
+checkout for now. They are not included in the new folder module and are not its
+supported runtime. Historical tests of the old manifest and operation set do not
+validate the new card interface. Do not start an old indexer against an upgraded
+root. The TUI has been removed.
 
-## Environment and tests
+## Local verification
 
-Use an existing Python 3.12+ environment with pytest, Textual and the Core 1.5+
-package (including its retrieval dependencies). This repository
-does not create environments or install dependencies automatically. The
-standalone indexer has separate pinned requirements; see `standalone.md`.
+Use Python 3.12+, pytest and the matching Core source containing the RAG
+`object_ids` filter capability. This is an unreleased coordinated source change;
+an older Core version with the same version label may lack that capability.
+The module checks it when starting and reports that Core must be updated.
 
-For an installed matching Core development package:
-
-```bash
-PYTHONPATH=src /path/to/existing/python -m pytest -q tests
+```console
+PYTHONPATH=src:/path/to/contextopus-core/src python -m pytest -q tests/test_session_cards.py tests/test_installers.py
+python scripts/build-module.py --zip /tmp/session-search-0.9.0.zip
 ```
 
-To test against an explicitly selected Core source checkout instead:
+Card tests install the actual folder module into a temporary Core root and use
+real child RPC, SQL, file reconciliation and vector retrieval with deterministic
+test embeddings. They cover identity, filters before result selection, external
+edits/moves/deletions, revisions, failed embedding retry and legacy-data
+preservation. They neither read user transcripts nor download a model. Passing
+these checks does not measure real-model semantic quality.
 
-```bash
-PYTHONPATH=src:/path/to/contextopus-core/src /path/to/existing/python -m pytest -q tests
-```
+Core's web tests cover HTTP input validation and the module-driven filter UI.
+A source build does not update the working installation or restart services.
 
-The Core source path is an explicit integration-test input, not a fixed relative
-path embedded in this repository. Folder-service tests use a temporary root,
-Core SQL/RAG and real child service with fake embeddings. They cover startup,
-selection, deduplication, search/history, restart recovery and lifecycle behavior.
-Other tests retain standalone MCP/indexer, native session-management and `.deb`
-coverage. Tests do not index the user's working transcripts or download a model.
+## CI and release
 
-## Build artifacts
+CI runs the card and installer suites on Linux, Windows and macOS. It checks out
+Core `main` by default; a manual run can select an explicit matching Core ref.
+The local Core capability must be published before remote CI can pass. Pin a
+coordinated Core release when publishing this module. Linux builds the folder
+ZIP; legacy standalone packages are not release assets of the card module.
 
-```bash
-python3 scripts/build-module.py /tmp/session-search-build/session_search
-python3 scripts/build-module.py --zip /tmp/session-search-build/session-search-0.8.0.zip
-./scripts/build-deb.sh /tmp/session-search-build/session-search_0.8.0_all.deb
-```
-
-The module builder uses a deliberate source allowlist and copies SQL migrations,
-wrappers and its self-contained guide. The optional ZIP has one top-level
-`session_search/` folder. Both modes refuse existing output. The `.deb` builder
-requires existing `dpkg-deb`; it packages standalone compatibility separately.
-Builders do not install or activate either product path.
-
-The manifest currently declares module version `0.8.0`, Core `>=1.5,<2` and SQL
-schema version `1`. Passing fixture checks establishes source behavior, not
-real-model performance on a particular machine.
-
-## Language and CI
-
-Product documentation, code comments and shipped messages are English. Russian
-strings and emoji in selected tests are intentional Unicode/UTF-8 fixtures for
-search, token prompts, streaming blocks and JSONL offsets; changing them would
-change the cases being tested.
-
-CI explicitly checks out Core `v1.5.0`, installs its test dependencies plus
-`sqlite-vec==0.1.9`, runs the complete Linux suite and builds module/standalone
-assets. Separate Windows and macOS jobs exercise the portable folder module;
-legacy Unix-daemon coverage remains in the Linux job. These tests use temporary
-roots, synthetic conversations and fake embeddings, with no model download.
-The manual `test_live_indexer.py` script is a separate real-model experiment and
-is not run by normal pytest discovery.
-
-Tagging and publication are handled by the release coordinator. CI uploads build
-artifacts; it does not publish releases or alter an installed data root.
+Product documentation, skills and messages are English. Unicode fixture data is
+intentional. Builds do not publish releases or change installed roots.

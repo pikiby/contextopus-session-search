@@ -10,9 +10,7 @@ import zipfile
 
 ROOT = Path(__file__).resolve().parents[1]
 # Deliberate code allowlist: no old socket frontend, model, private vectors or data.
-SOURCES = ("__init__", "reader", "store", "indexer", "cpu", "charts", "search_history",
-           "settings", "session_types", "session_management", "server", "module_migration",
-           "module_store", "module_service", "tui", "tui_core_backend")
+SOURCES = ("__init__", "cards", "card_service")
 
 
 def build(output):
@@ -32,13 +30,15 @@ def build(output):
         stage = Path(temporary) / "session_search"
         package = stage / "package/session_search"
         package.mkdir(parents=True)
-        for name in ("worker.py", "tui_launch.py"):
+        for name in ("worker.py",):
             shutil.copy2(ROOT / "module/package" / name, stage / "package" / name)
         for source in inputs:
             shutil.copy2(source, package / source.name)
         (stage / "package/migrations").mkdir()
         for source in sorted(migrations.glob("*.sql")):
             shutil.copy2(source, stage / "package/migrations" / source.name)
+        shutil.copytree(ROOT / "module/package/procedures", stage / "package/procedures")
+        shutil.copytree(ROOT / "module/package/skills", stage / "package/skills")
         shutil.copy2(ROOT / "module/module.json", stage / "module.json")
         shutil.copy2(ROOT / "docs/module.md", stage / "README.md")
         for name in ("LICENSE", "NOTICE", "install.sh", "install.ps1"):

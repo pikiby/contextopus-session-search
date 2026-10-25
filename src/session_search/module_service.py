@@ -232,6 +232,9 @@ class Service:
                 response.put((False,'Module worker stopped'))
     def dispatch(self, operation, arguments, context=None):
         name = operation.removeprefix(MODULE+'.')
+        if name == 'library':
+            from .library import library
+            return library(self, **arguments)
         if name == 'status': return self.status()
         if name == 'settings': return self.settings()
         if name == 'open_tui':

@@ -68,6 +68,14 @@ def test_folder_install_index_search_pause_and_restart_are_portable(tmp_path, ki
         arguments["source_revision"] = preview["revision"]
         assert app.execute("core.module_install", arguments)["state"] == "enabled"
         assert app.query("session_search.status")["integration"] == "core"
+        for name in ("search", "indexing", "maintenance"):
+            procedure = app.procedure("session_search/" + name)
+            assert procedure["operations"]
+            assert not procedure.get("unavailable_operations")
+            assert not procedure["content"].startswith("---")
+            for operation in procedure["operations"]:
+                assert operation == app.registry.describe(operation["operation"])
+
         app.execute("session_search.configure", {"codex_home": str(home)})
         app.execute("session_search.start")
         deadline = time.monotonic() + 30

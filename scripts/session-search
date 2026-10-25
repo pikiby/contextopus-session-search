@@ -9,7 +9,6 @@ export PYTHONPATH="/usr/lib/session-search${PYTHONPATH:+:$PYTHONPATH}"
 export HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 TOKENIZERS_PARALLELISM=false
 export PYTHONDONTWRITEBYTECODE=1
 case "${1:-}" in
-    tui) shift; exec "$python" -m session_search.tui "$@" ;;
     mcp) shift; exec "$python" -m session_search.server "$@" ;;
     index) shift; exec "$python" -m session_search.indexer "$@" ;;
     status)
@@ -17,5 +16,5 @@ case "${1:-}" in
         if [ "$#" -ne 0 ]; then echo 'Usage: session-search status' >&2; exit 2; fi
         exec "$python" -c 'import json; from session_search.indexer import request_index; print(json.dumps(request_index({"op": "status"}), ensure_ascii=False, indent=2))'
         ;;
-    *) echo 'Usage: session-search mcp|index|status|tui' >&2; exit 2 ;;
+    *) echo 'Usage: session-search mcp|index|status' >&2; exit 2 ;;
 esac

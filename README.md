@@ -1,83 +1,55 @@
 # Contextopus Session Search
 
-![Contextopus](docs/media/contextopus-wide-1200.svg)
+**Find past work by meaning, without indexing entire conversations.** Agents maintain searchable session cards: topics, decisions, results and where work stopped. Each card links back to its original session and related Contextopus records.
 
-Find a previous Codex decision, inspect the original messages and resume the
-right session. Session Search adds conversation search to
-[Contextopus Core](https://github.com/pikiby/contextopus-core).
+## Install with Core
 
-- Search by meaning or exact text, with links and byte offsets to source JSONL.
-- Select active or archived conversations and filter by session type, project,
-  dates, model or size.
-- Reuse one Core embedding model and retrieval store across modules.
-- Preview archive, restore or delete actions before applying an exact plan.
+Requires **Core >=1.7,<2**. Download the [0.9.0 module](https://github.com/pikiby/contextopus-session-search/releases/download/v0.9.0/session-search-0.9.0.zip), verify its checksum and install it:
 
-Indexing leaves source transcripts unchanged. Session merging is not implemented.
-
-## Install
-
-Requires **Core 1.5 or newer (below 2.0)** and Python 3.12+. Install Core first
-using its [starter bundle](https://github.com/pikiby/contextopus-core/releases).
-
-Download `session-search-0.8.0.zip` from
-[Session Search releases](https://github.com/pikiby/contextopus-session-search/releases)
-and extract it. Open a terminal in the extracted `session_search` folder:
-
-```bash
-./install.sh --root "/path/to/existing/Contextopus"
+```console
+contextopus --root /path/to/contextopus-data modules install session_search --source /path/to/session-search-0.9.0.zip
 ```
 
-On Windows PowerShell:
+For an existing installation use Core's module update preview/apply workflow. Do not replace its data directory.
 
-```powershell
-.\install.ps1 -Root "C:\path\Contextopus"
+## Use it
+
+Apply your coding assistant's normal Contextopus integration to deliver the module skills.
+
+- `$sessions`: create or update the current session's description.
+- `$sessions-search`: search session cards by meaning and metadata.
+- `$sessions-edit`: edit or explicitly delete a card.
+
+Skill syntax depends on the client. You can also ask an agent to use the named skill. A user may put update requirements in Workspace rules, AGENTS.md, CLAUDE.md or another host instruction file. There is no timer, message counter, watcher or automatic `finish` integration.
+
+## Files and search
+
+Cards are ordinary Markdown with YAML under `modules/session_search/data/sessions/`. YAML carries stable card and native session IDs, source/client, title, description, source URI/path, project, tags, context links and optional explicit required links. The Markdown describes significant topics, results and outstanding work. Context and session links use Obsidian syntax and do not automatically inherit instructions.
+
+Core indexes the description body and uses metadata filters before semantic selection. Session Search uses the same RAG and module storage lifecycle as other modules. It has no private embedding model. Read cards in the Core web library:
+
+```console
+contextopus --root /path/to/contextopus-data web
 ```
 
-If Core already has a bound data root, omit `--root` / `-Root`. Add `--plan` /
-`-Plan` to inspect without installing. The installers delegate to Core's common
-module lifecycle. A direct folder or ZIP install is equivalent:
+The library shows session descriptions, source/client, native ID, metadata filters and connections. It does not display an imported copy of the conversation.
 
-```bash
-contextopus --root "/path/to/existing/Contextopus" modules install session_search --source "/path/to/session-search-0.8.0.zip"
-```
+## Editing and preservation
 
-An existing module is updated through `modules update`; source installation
-refuses to overwrite it. [Configuration, updates and operation reference](docs/module.md).
+Agent saves use revision checks. External Markdown edits, moves and deletions are applied with `session_search.reconcile`. Failed indexing leaves the saved file intact and reports pending work; reconciliation retries it. Missing or invalid source directories fail closed.
 
-## Start searching
+Updating from the transcript-indexing module preserves existing SQL tables, configuration and original session files. Legacy transcript blocks are not exposed by the new search; their derived vectors are retired during reconciliation. No summaries are invented from legacy rows. Existing sessions need agent-authored cards to appear here.
 
-Connect your agent to Core's shared MCP. Configure `session_search.configure`
-with an existing `codex_home`, then call `session_search.start`. Check
-`session_search.status` for progress and use `session_search.search` with a
-query and `mode="semantic"` or `"literal"`.
+The module has no TUI and does not archive, resume or delete original conversations. Source files, deep links and native IDs are references; opening them depends on the originating client.
 
-Main active sessions are selected by default. Archive and subagent selection is
-explicit. The terminal interface opens from Core's module menu and shows
-indexing progress, embedding speed and recent search metrics. Read later messages
-before treating a found task as unfinished.
+## Client delivery
 
-[Contextopus Workspace](https://github.com/pikiby/contextopus-workspace) is an
-optional companion for structured project knowledge; Session Search also works
-without it.
+Core 1.7 client packages share one installer and one persistent data root.
+Skills use full canonical names under the `contextopus` plugin namespace, or a
+`contextopus-` prefix for native file delivery. Short aliases are user-selected.
+See the [client package guide](https://github.com/pikiby/contextopus-core/blob/main/docs/client-packages.md)
+for package formats, setup and verification limits.
 
-## Build and develop
+## Current release
 
-```bash
-python3 scripts/build-module.py /tmp/session-search-build/session_search
-python3 scripts/build-module.py --zip /tmp/session-search-build/session-search-0.8.0.zip
-```
-
-Builds contain the module, SQL migrations, installers, guide and license files;
-no transcripts, indexes or model weights. Outputs are never overwritten.
-[Development and tests](docs/development.md) ·
-[Bounded standalone measurements](docs/block-comparison.md).
-
-The independent stdio MCP/indexer and `.deb` remain a secondary compatibility
-path with their own offline model. [Standalone guide](docs/standalone.md).
-The module uses Core's model and lifecycle. Native platform checks are defined
-in CI; local verification uses Linux fixtures, and the standalone target is
-Linux Mint 22.3.
-
-## License
-
-Apache-2.0. See [LICENSE](LICENSE) and retained attribution in [NOTICE](NOTICE).
+[0.9.0: Searchable session cards](docs/releases/0.9.0.md) · [Downloads](https://github.com/pikiby/contextopus-session-search/releases/tag/v0.9.0)

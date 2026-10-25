@@ -9,13 +9,13 @@ trap 'rm -rf "$stage"' EXIT HUP INT TERM
 mkdir -p "$stage/DEBIAN" "$stage/usr/lib/session-search/session_search" "$stage/usr/bin" "$stage/usr/lib/systemd/user" "$stage/usr/share/doc/session-search"
 cp "$root/packaging/control" "$stage/DEBIAN/control"
 # Explicit allowlist excludes sessions, databases, environments and model weights.
-for name in __init__ reader store embedding indexer server tui tui_backend cpu charts search_history settings session_management session_types core_module migration tui_core_backend; do
+for name in __init__ reader store embedding indexer server cpu charts search_history settings session_management session_types core_module migration; do
     cp "$root/src/session_search/$name.py" "$stage/usr/lib/session-search/session_search/$name.py"
 done
 cp "$root/scripts/session-search" "$stage/usr/bin/session-search"
 chmod 755 "$stage/usr/bin/session-search"
 cp "$root/packaging/codex-session-index.service" "$stage/usr/lib/systemd/user/"
-cp "$root/README.md" "$root/LICENSE" "$root/NOTICE" "$root/requirements-indexer.txt" "$root/requirements-tui.txt" "$stage/usr/share/doc/session-search/"
+cp "$root/README.md" "$root/LICENSE" "$root/NOTICE" "$root/requirements-indexer.txt" "$stage/usr/share/doc/session-search/"
 mkdir -p "$stage/usr/share/doc/session-search/docs"
 cp "$root"/docs/*.md "$stage/usr/share/doc/session-search/docs/"
 mkdir -p "$stage/usr/share/doc/session-search/docs/media"

@@ -9,7 +9,7 @@ on:
     inputs:
       core_ref:
         description: Matching Core tag or commit
-        default: v1.5.0
+        default: main
         required: true
 
 permissions:
@@ -28,24 +28,23 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: pikiby/contextopus-core
-          ref: ${{ inputs.core_ref || 'v1.5.0' }}
+          ref: ${{ inputs.core_ref || 'main' }}
           path: core
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
       - name: Install explicit test dependencies
         run: python -m pip install "./core[test]" sqlite-vec==0.1.9
-      - name: Test module and standalone compatibility
+      - name: Test session cards and installers
         working-directory: session-search
-        run: python -m pytest -q tests
+        run: python -m pytest -q tests/test_session_cards.py tests/test_installers.py
       - name: Build release assets
         working-directory: session-search
         run: |
-          python scripts/build-module.py --zip dist/session-search-0.8.0.zip
-          ./scripts/build-deb.sh
+          python scripts/build-module.py --zip dist/session-search-0.9.0.zip
       - uses: actions/upload-artifact@v4
         with:
-          name: session-search-0.8.0
+          name: session-search-0.9.0
           path: session-search/dist/*
           if-no-files-found: error
 
@@ -65,7 +64,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: pikiby/contextopus-core
-          ref: ${{ inputs.core_ref || 'v1.5.0' }}
+          ref: ${{ inputs.core_ref || 'main' }}
           path: core
       - uses: actions/setup-python@v5
         with:
@@ -73,4 +72,4 @@ jobs:
       - run: python -m pip install "./core[test]"
       - name: Test portable folder module and source-install preview
         working-directory: session-search
-        run: python -m pytest -q tests/test_native_module.py tests/test_portability.py tests/test_installers.py
+        run: python -m pytest -q tests/test_session_cards.py tests/test_installers.py

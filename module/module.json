@@ -1,15 +1,15 @@
 {
   "id": "session_search",
-  "version": "0.8.0",
-  "core_requires": ">=1.5,<2",
+  "version": "0.9.0",
+  "core_requires": ">=1.7,<2",
   "rag": true,
   "storage": {
     "engine": "sqlite",
-    "schema_version": 1,
+    "schema_version": 2,
     "migrations": "migrations",
     "compatible_versions": {
-      "min": 1,
-      "max": 1
+      "min": 2,
+      "max": 2
     }
   },
   "service": {
@@ -17,12 +17,13 @@
     "ready_timeout": 30,
     "stop_timeout": 10
   },
-  "tui": "session_search.open_tui",
   "operations": [
     {
       "name": "session_search.status",
       "kind": "query",
       "service": true,
+      "description": "Inspect session-card storage and pending indexing. Never starts transcript collection.",
+      "timeout": 120,
       "arguments_schema": {
         "type": "object",
         "properties": {},
@@ -31,219 +32,118 @@
       }
     },
     {
-      "name": "session_search.settings",
-      "kind": "query",
-      "service": true,
-      "arguments_schema": {
-        "type": "object",
-        "properties": {},
-        "required": [],
-        "additionalProperties": false
-      }
-    },
-    {
-      "name": "session_search.open_tui",
-      "kind": "query",
-      "service": true,
-      "arguments_schema": {
-        "type": "object",
-        "properties": {},
-        "required": [],
-        "additionalProperties": false
-      }
-    },
-    {
-      "name": "session_search.configure",
+      "name": "session_search.save",
       "kind": "execute",
       "service": true,
+      "description": "Create or update one Markdown session card. Existing cards require expected_revision. Save never reads or modifies the original conversation. Files survive indexing failure; retry reconcile.",
+      "timeout": 120,
       "arguments_schema": {
         "type": "object",
         "properties": {
-          "codex_home": {
-            "type": "string"
-          },
-          "block_tokens": {
-            "enum": [
-              512,
-              1024,
-              2048
+          "record": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "id": {
+                "type": "string",
+                "minLength": 1
+              },
+              "title": {
+                "type": "string",
+                "minLength": 1
+              },
+              "description": {
+                "type": "string",
+                "minLength": 1
+              },
+              "source": {
+                "type": "string",
+                "minLength": 1
+              },
+              "session_id": {
+                "type": "string",
+                "minLength": 1
+              },
+              "content": {
+                "type": "string",
+                "minLength": 1
+              },
+              "source_uri": {
+                "type": "string"
+              },
+              "project": {
+                "type": "string"
+              },
+              "status": {
+                "type": "string"
+              },
+              "tags": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              },
+              "contexts": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              },
+              "links": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              },
+              "required_links": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              },
+              "covered_through": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "title",
+              "description",
+              "source",
+              "session_id",
+              "content"
             ]
           },
-          "autostart": {
-            "type": "boolean"
-          }
-        },
-        "required": [
-          "codex_home"
-        ],
-        "additionalProperties": false
-      }
-    },
-    {
-      "name": "session_search.start",
-      "kind": "execute",
-      "service": true,
-      "arguments_schema": {
-        "type": "object",
-        "properties": {},
-        "required": [],
-        "additionalProperties": false
-      },
-      "timeout": 120
-    },
-    {
-      "name": "session_search.stop",
-      "kind": "execute",
-      "service": true,
-      "arguments_schema": {
-        "type": "object",
-        "properties": {},
-        "required": [],
-        "additionalProperties": false
-      }
-    },
-    {
-      "name": "session_search.selection",
-      "kind": "execute",
-      "service": true,
-      "arguments_schema": {
-        "type": "object",
-        "properties": {
-          "active": {
-            "type": "boolean"
-          },
-          "archived": {
-            "type": "boolean"
-          },
-          "types": {
-            "type": "array",
-            "items": {
-              "enum": [
-                "main",
-                "subagent",
-                "guardian",
-                "exec",
-                "unknown"
-              ]
-            }
-          }
-        },
-        "required": [
-          "active",
-          "archived",
-          "types"
-        ],
-        "additionalProperties": false
-      }
-    },
-    {
-      "name": "session_search.search",
-      "kind": "query",
-      "service": true,
-      "arguments_schema": {
-        "type": "object",
-        "properties": {
-          "query": {
+          "expected_revision": {
             "type": "string",
             "minLength": 1
-          },
-          "mode": {
-            "enum": [
-              "semantic",
-              "literal"
-            ]
-          },
-          "state": {
-            "enum": [
-              "all",
-              "active",
-              "archived"
-            ]
-          },
-          "limit": {
-            "type": "integer",
-            "minimum": 1,
-            "maximum": 200
           }
         },
         "required": [
-          "query"
-        ],
-        "additionalProperties": false
-      },
-      "timeout": 120
-    },
-    {
-      "name": "session_search.history",
-      "kind": "query",
-      "service": true,
-      "arguments_schema": {
-        "type": "object",
-        "properties": {
-          "limit": {
-            "type": "integer",
-            "minimum": 1,
-            "maximum": 200
-          }
-        },
-        "required": [],
-        "additionalProperties": false
-      }
-    },
-    {
-      "name": "session_search.info",
-      "kind": "query",
-      "service": true,
-      "arguments_schema": {
-        "type": "object",
-        "properties": {
-          "state": {
-            "type": "string",
-            "enum": [
-              "active",
-              "archived",
-              "all"
-            ],
-            "description": "Session storage to inspect."
-          },
-          "session": {
-            "type": "string",
-            "description": "Session id, renamed session name, file name or path."
-          },
-          "include_messages": {
-            "type": "boolean",
-            "description": "Include compact first/last user message previews. Default true."
-          }
-        },
-        "required": [
-          "session"
+          "record"
         ],
         "additionalProperties": false
       }
     },
     {
-      "name": "session_search.resume_command",
+      "name": "session_search.read",
       "kind": "query",
       "service": true,
+      "description": "Read one complete session description, metadata and links. Links do not inherit rules automatically.",
+      "timeout": 120,
       "arguments_schema": {
         "type": "object",
         "properties": {
-          "state": {
+          "id": {
             "type": "string",
-            "enum": [
-              "active",
-              "archived",
-              "all"
-            ],
-            "description": "Session storage to inspect."
-          },
-          "session": {
-            "type": "string",
-            "description": "Session id, renamed session name, file name or path."
+            "minLength": 1
           }
         },
         "required": [
-          "session"
+          "id"
         ],
         "additionalProperties": false
       }
@@ -252,6 +152,8 @@
       "name": "session_search.list",
       "kind": "query",
       "service": true,
+      "description": "List session cards with metadata filters; no conversation text.",
+      "timeout": 120,
       "arguments_schema": {
         "type": "object",
         "properties": {
@@ -259,74 +161,25 @@
             "type": "object",
             "additionalProperties": false,
             "properties": {
-              "state": {
+              "source": {
                 "type": "string",
-                "enum": [
-                  "active",
-                  "archived",
-                  "all"
-                ]
+                "minLength": 1
               },
-              "cwd": {
+              "project": {
                 "type": "string",
-                "description": "Exact working directory."
+                "minLength": 1
               },
-              "cwd_prefix": {
+              "context": {
                 "type": "string",
-                "description": "Working directory subtree, path-component aware."
+                "minLength": 1
               },
-              "path": {
+              "tag": {
                 "type": "string",
-                "description": "Exact rollout file path."
+                "minLength": 1
               },
-              "created_after": {
+              "status": {
                 "type": "string",
-                "description": "Inclusive ISO 8601 bound; timezone defaults to UTC. Missing dates do not match."
-              },
-              "created_before": {
-                "type": "string",
-                "description": "Inclusive ISO 8601 bound; timezone defaults to UTC. Missing dates do not match."
-              },
-              "last_message_after": {
-                "type": "string",
-                "description": "Inclusive ISO 8601 bound; timezone defaults to UTC. Missing dates do not match."
-              },
-              "last_message_before": {
-                "type": "string",
-                "description": "Inclusive ISO 8601 bound; timezone defaults to UTC. Missing dates do not match."
-              },
-              "min_bytes": {
-                "type": "integer",
-                "minimum": 0
-              },
-              "max_bytes": {
-                "type": "integer",
-                "minimum": 0
-              },
-              "session_types": {
-                "type": "array",
-                "items": {
-                  "enum": [
-                    "main",
-                    "subagent",
-                    "guardian",
-                    "exec",
-                    "unknown"
-                  ]
-                }
-              },
-              "models": {
-                "type": "array",
-                "items": {
-                  "type": "string"
-                },
-                "description": "Match any exact model name recorded in turn_context, not provider name."
-              },
-              "ids": {
-                "type": "array",
-                "items": {
-                  "type": "string"
-                }
+                "minLength": 1
               }
             }
           },
@@ -337,99 +190,166 @@
           "limit": {
             "type": "integer",
             "minimum": 1,
-            "maximum": 1000
+            "maximum": 100
           }
         },
+        "required": [],
         "additionalProperties": false
       }
     },
     {
-      "name": "session_search.cleanup_preview",
+      "name": "session_search.search",
       "kind": "query",
       "service": true,
+      "description": "Search card descriptions through shared Core RAG. Metadata filters and current file revisions restrict candidates before relevance selection. No transcript excerpts.",
+      "timeout": 120,
       "arguments_schema": {
         "type": "object",
         "properties": {
-          "action": {
+          "query": {
             "type": "string",
-            "enum": [
-              "archive",
-              "unarchive",
-              "delete"
-            ]
+            "minLength": 1
           },
           "filters": {
             "type": "object",
             "additionalProperties": false,
             "properties": {
-              "state": {
+              "source": {
                 "type": "string",
-                "enum": [
-                  "active",
-                  "archived",
-                  "all"
-                ]
+                "minLength": 1
               },
-              "cwd": {
+              "project": {
                 "type": "string",
-                "description": "Exact working directory."
+                "minLength": 1
               },
-              "cwd_prefix": {
+              "context": {
                 "type": "string",
-                "description": "Working directory subtree, path-component aware."
+                "minLength": 1
               },
-              "path": {
+              "tag": {
                 "type": "string",
-                "description": "Exact rollout file path."
+                "minLength": 1
               },
-              "created_after": {
+              "status": {
                 "type": "string",
-                "description": "Inclusive ISO 8601 bound; timezone defaults to UTC. Missing dates do not match."
-              },
-              "created_before": {
+                "minLength": 1
+              }
+            }
+          },
+          "selection": {
+            "type": "object"
+          }
+        },
+        "required": [
+          "query"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "session_search.reconcile",
+      "kind": "execute",
+      "service": true,
+      "description": "Reconcile Markdown additions, edits, moves and deletions into derived SQL and shared RAG. Does not read source sessions, generate summaries or run a background watcher.",
+      "timeout": 120,
+      "arguments_schema": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "session_search.delete",
+      "kind": "execute",
+      "service": true,
+      "description": "Delete only the selected session card at its current revision and reconcile its index. Never deletes the original session.",
+      "timeout": 120,
+      "arguments_schema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "expected_revision": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "required": [
+          "id",
+          "expected_revision"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "session_search.library",
+      "kind": "query",
+      "service": true,
+      "description": "Browse session cards through the shared web library. Source, project, context, tag and status filters work for text and semantic search.",
+      "timeout": 120,
+      "arguments_schema": {
+        "type": "object",
+        "properties": {
+          "action": {
+            "enum": [
+              "collections",
+              "records",
+              "record"
+            ]
+          },
+          "collection": {
+            "type": "string"
+          },
+          "query": {
+            "type": "string"
+          },
+          "mode": {
+            "enum": [
+              "text",
+              "semantic"
+            ]
+          },
+          "type": {
+            "type": "string"
+          },
+          "offset": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100
+          },
+          "id": {
+            "type": "string"
+          },
+          "filters": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "source": {
                 "type": "string",
-                "description": "Inclusive ISO 8601 bound; timezone defaults to UTC. Missing dates do not match."
+                "minLength": 1
               },
-              "last_message_after": {
+              "project": {
                 "type": "string",
-                "description": "Inclusive ISO 8601 bound; timezone defaults to UTC. Missing dates do not match."
+                "minLength": 1
               },
-              "last_message_before": {
+              "context": {
                 "type": "string",
-                "description": "Inclusive ISO 8601 bound; timezone defaults to UTC. Missing dates do not match."
+                "minLength": 1
               },
-              "min_bytes": {
-                "type": "integer",
-                "minimum": 0
+              "tag": {
+                "type": "string",
+                "minLength": 1
               },
-              "max_bytes": {
-                "type": "integer",
-                "minimum": 0
-              },
-              "session_types": {
-                "type": "array",
-                "items": {
-                  "enum": [
-                    "main",
-                    "subagent",
-                    "guardian",
-                    "exec",
-                    "unknown"
-                  ]
-                }
-              },
-              "models": {
-                "type": "array",
-                "items": {
-                  "type": "string"
-                },
-                "description": "Match any exact model name recorded in turn_context, not provider name."
-              },
-              "ids": {
-                "type": "array",
-                "items": {
-                  "type": "string"
-                }
+              "status": {
+                "type": "string",
+                "minLength": 1
               }
             }
           }
@@ -439,68 +359,8 @@
         ],
         "additionalProperties": false
       }
-    },
-    {
-      "name": "session_search.cleanup_apply",
-      "kind": "execute",
-      "service": true,
-      "arguments_schema": {
-        "type": "object",
-        "properties": {
-          "plan": {
-            "type": "object"
-          },
-          "confirmation": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "plan",
-          "confirmation"
-        ],
-        "additionalProperties": false
-      },
-      "timeout": 3600
-    },
-    {
-      "name": "session_search.migration_preview",
-      "kind": "query",
-      "service": true,
-      "arguments_schema": {
-        "type": "object",
-        "properties": {
-          "source": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "source"
-        ],
-        "additionalProperties": false
-      },
-      "timeout": 120
-    },
-    {
-      "name": "session_search.migration_apply",
-      "kind": "execute",
-      "service": true,
-      "arguments_schema": {
-        "type": "object",
-        "properties": {
-          "plan": {
-            "type": "object"
-          },
-          "confirmation": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "plan",
-          "confirmation"
-        ],
-        "additionalProperties": false
-      },
-      "timeout": 3600
     }
-  ]
+  ],
+  "procedures": "procedures",
+  "skills": "skills"
 }
