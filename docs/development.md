@@ -22,9 +22,8 @@ root. The TUI has been removed.
 
 ## Local verification
 
-Use Python 3.12+, pytest and the matching Core source containing the RAG
-`object_ids` filter capability. This is an unreleased coordinated source change;
-an older Core version with the same version label may lack that capability.
+Use Python 3.12+, pytest and Core >=1.7,<2, which includes the shared RAG
+`object_ids` filter capability.
 The module checks it when starting and reports that Core must be updated.
 
 ```console

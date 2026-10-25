@@ -11,7 +11,7 @@ python scripts/build-module.py /tmp/session-search-module
 contextopus --root /path/to/contextopus-data modules install session_search --source /tmp/session-search-module
 ```
 
-For an existing installation use Core's module update preview/apply workflow. Do not replace its data directory. This source revision requires Core's shared child RAG `object_ids` filter extension; use the matching local Core build until the coordinated release is published.
+For an existing installation use Core's module update preview/apply workflow. Do not replace its data directory. Requires Core >=1.7,<2 with the shared RAG `object_ids` filter capability.
 
 ## Use it
 
