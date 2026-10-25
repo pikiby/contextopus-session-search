@@ -52,4 +52,4 @@ for package formats, setup and verification limits.
 
 ## Current release
 
-[0.9.0: Searchable session cards](docs/releases/0.9.0.md) · [Downloads](https://github.com/pikiby/contextopus-session-search/releases/tag/v0.9.0)
+[0.9.0: Searchable session cards](https://github.com/pikiby/contextopus-session-search/releases/tag/v0.9.0) · [Downloads](https://github.com/pikiby/contextopus-session-search/releases/tag/v0.9.0)
