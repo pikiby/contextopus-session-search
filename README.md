@@ -4,10 +4,10 @@
 
 ## Install with Core
 
-Requires **Core >=1.7,<2**. Download the [0.9.0 module](https://github.com/pikiby/contextopus-session-search/releases/download/v0.9.0/session-search-0.9.0.zip), verify its checksum and install it:
+Requires **Core >=1.7,<2**. Download the [0.9.1 module](https://github.com/pikiby/contextopus-session-search/releases/download/v0.9.1/session-search-0.9.1.zip) and install it:
 
 ```console
-contextopus --root /path/to/contextopus-data modules install session_search --source /path/to/session-search-0.9.0.zip
+contextopus --root /path/to/contextopus-data modules install session_search --source /path/to/session-search-0.9.1.zip
 ```
 
 For an existing installation use Core's module update preview/apply workflow. Do not replace its data directory.
@@ -52,4 +52,4 @@ for package formats, setup and verification limits.
 
 ## Current release
 
-[0.9.0: Searchable session cards](https://github.com/pikiby/contextopus-session-search/releases/tag/v0.9.0) · [Downloads](https://github.com/pikiby/contextopus-session-search/releases/tag/v0.9.0)
+[0.9.1: Explicit session-link validation](docs/releases/0.9.1.md) · [Downloads](https://github.com/pikiby/contextopus-session-search/releases/tag/v0.9.1)

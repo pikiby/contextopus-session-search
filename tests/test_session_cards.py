@@ -152,5 +152,5 @@ def test_zip_contains_only_card_runtime(tmp_path):
         assert 'session_search/package/migrations/002-session-cards.sql' in names
         assert not any(n.endswith(('/indexer.py','/module_service.py','/tui.py')) for n in names)
         manifest=json.loads(z.read('session_search/module.json'))
-        assert manifest['version']=='0.9.0'
+        assert manifest['version']=='0.9.1'
     assert Path(str(archive)+'.sha256').is_file()

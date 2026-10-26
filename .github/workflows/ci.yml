@@ -41,10 +41,10 @@ jobs:
       - name: Build release assets
         working-directory: session-search
         run: |
-          python scripts/build-module.py --zip dist/session-search-0.9.0.zip
+          python scripts/build-module.py --zip dist/session-search-0.9.1.zip
       - uses: actions/upload-artifact@v4
         with:
-          name: session-search-0.9.0
+          name: session-search-0.9.1
           path: session-search/dist/*
           if-no-files-found: error
 
